@@ -1,0 +1,40 @@
+{
+  "name": "pigcloud-desktop",
+  "version": "1.0.0",
+  "description": "PigCloud desktop app with native folder sync",
+  "author": {"name": "PigTech", "email": "support@pigtech.de"},
+  "homepage": "https://pigcloud.de",
+  "license": "SEE LICENSE IN bundle/LICENSE",
+  "private": true,
+  "type": "module",
+  "main": "main.mjs",
+  "scripts": {
+    "postinstall": "install-electron",
+    "start": "electron .",
+    "build:assets": "node build-offline.mjs",
+    "build:cli": "node build-cli.mjs",
+    "build": "npm run build:assets && npm run build:cli",
+    "package": "npm run build && electron-builder --publish never",
+    "package:dir": "npm run build && electron-builder --dir --publish never",
+    "smoke": "electron smoke.mjs"
+  },
+  "devDependencies": {
+    "@electron/fuses": "2.1.3",
+    "electron": "44.3.0",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "de.pigcloud.desktop",
+    "productName": "PigCloud",
+    "asar": true,
+    "directories": {"output": "dist"},
+    "files": ["*.mjs", "core/**", "preload.cjs", "bundle/**", "package.json", "!build-*.mjs", "!smoke.mjs"],
+    "extraResources": [{"from": "resources", "to": ".", "filter": ["pc", "pc.exe"]}],
+    "afterPack": "./build-fuses.mjs",
+    "win": {"target": ["nsis", "zip"], "icon": "../sync/packaging/icons/pigcloud-sync.ico"},
+    "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true},
+    "mac": {"target": ["dmg", "zip"], "category": "public.app-category.productivity", "icon": "../sync/packaging/icons/pigcloud-sync-1024.png", "hardenedRuntime": true},
+    "linux": {"target": ["deb", "AppImage"], "category": "Network", "icon": "../sync/packaging/icons/pigcloud-sync-512.png"},
+    "artifactName": "pigcloud-${version}-${os}-${arch}.${ext}"
+  }
+}

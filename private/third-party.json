@@ -1,0 +1,76 @@
+{
+  "components": [
+    {
+      "id": "fontawesome",
+      "display": "Font Awesome Free",
+      "homepage": "https://fontawesome.com",
+      "group": "ui-icons",
+      "license": "CC-BY-4.0 AND MIT AND OFL-1.1",
+      "texts": [
+        "assets/fontawesome-free.txt"
+      ],
+      "note": "Icons CC BY 4.0, code MIT, fonts OFL 1.1."
+    },
+    {
+      "id": "annotation-mono",
+      "display": "Annotation Mono",
+      "homepage": "https://github.com/qwerasd205/AnnotationMono",
+      "group": "fonts",
+      "license": "OFL-1.1",
+      "texts": [
+        "fonts/annotation-mono-ofl.txt"
+      ]
+    },
+    {
+      "id": "jetbrains-mono",
+      "display": "JetBrains Mono",
+      "homepage": "https://www.jetbrains.com/lp/mono/",
+      "group": "fonts",
+      "license": "OFL-1.1",
+      "texts": [
+        "fonts/jetbrains-mono-ofl.txt"
+      ]
+    },
+    {
+      "id": "ibm-plex-mono",
+      "display": "IBM Plex Mono",
+      "homepage": "https://www.ibm.com/plex/",
+      "group": "fonts",
+      "license": "OFL-1.1",
+      "texts": [
+        "fonts/ibm-plex-mono-ofl.txt"
+      ]
+    },
+    {
+      "id": "opendyslexic",
+      "display": "OpenDyslexic",
+      "homepage": "https://opendyslexic.org",
+      "group": "fonts",
+      "license": "OFL-1.1",
+      "texts": [
+        "fonts/opendyslexic-ofl.txt"
+      ]
+    },
+    {
+      "id": "fraunces",
+      "display": "Fraunces",
+      "homepage": "https://github.com/undercasetype/Fraunces",
+      "group": "fonts",
+      "license": "OFL-1.1",
+      "texts": [
+        "fonts/fraunces-ofl.txt"
+      ]
+    },
+    {
+      "id": "catppuccin",
+      "display": "Catppuccin",
+      "homepage": "https://github.com/catppuccin/catppuccin",
+      "group": "themes",
+      "license": "MIT",
+      "texts": [
+        "assets/catppuccin-mit.txt"
+      ],
+      "note": "The Mocha palette backs the mocha theme in public/global/global.css."
+    }
+  ]
+}

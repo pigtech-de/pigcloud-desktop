@@ -1,0 +1,20 @@
+{
+  "scripts": [
+    "global/core/constants.js",
+    "global/ui/modal-history.js",
+    "global/ui/popup-stack.js",
+    "global/ui/modal.js",
+    "global/ui/dialog-manager.js",
+    "global/ui/sheet.js",
+    "global/ui/menu.js",
+    "global/ui/custom-select.js",
+    "global/settings/account-password.js",
+    "global/settings/settings-shell.js",
+    "global/settings/settings-sync.js"
+  ],
+  "styles": [
+    "global/fontawesome/css/pigcloud-subset.min.css",
+    "global/global.css",
+    "global/global-deferred.css"
+  ]
+}
