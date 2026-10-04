@@ -71,6 +71,183 @@
         "assets/catppuccin-mit.txt"
       ],
       "note": "The Mocha palette backs the mocha theme in public/global/global.css."
+    },
+    {
+      "id": "npm-electron-updater",
+      "display": "electron-updater",
+      "homepage": "https://github.com/electron-userland/electron-builder",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/electron-updater-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-builder-util-runtime",
+      "display": "builder-util-runtime",
+      "homepage": "https://github.com/electron-userland/electron-builder",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/builder-util-runtime-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-fs-extra",
+      "display": "fs-extra",
+      "homepage": "https://github.com/jprichardson/node-fs-extra",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/fs-extra-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-js-yaml",
+      "display": "js-yaml",
+      "homepage": "https://github.com/nodeca/js-yaml",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/js-yaml-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-lazy-val",
+      "display": "lazy-val",
+      "homepage": "https://github.com/develar/lazy-val",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/lazy-val-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop",
+      "note": "Declares MIT in package.json and publishes no licence file; the text carries the canonical MIT terms with the declared author's copyright line."
+    },
+    {
+      "id": "npm-lodash.escaperegexp",
+      "display": "lodash.escaperegexp",
+      "homepage": "https://lodash.com",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/lodash-escaperegexp-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-lodash.isequal",
+      "display": "lodash.isequal",
+      "homepage": "https://lodash.com",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/lodash-isequal-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-semver",
+      "display": "semver",
+      "homepage": "https://github.com/npm/node-semver",
+      "group": "libraries",
+      "license": "ISC",
+      "texts": [
+        "desktop/semver-isc.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-tiny-typed-emitter",
+      "display": "tiny-typed-emitter",
+      "homepage": "https://github.com/binier/tiny-typed-emitter",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/tiny-typed-emitter-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-debug",
+      "display": "debug",
+      "homepage": "https://github.com/debug-js/debug",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/debug-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-sax",
+      "display": "sax",
+      "homepage": "https://github.com/isaacs/sax-js",
+      "group": "libraries",
+      "license": "BlueOak-1.0.0",
+      "texts": [
+        "desktop/sax-blueoak1.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-graceful-fs",
+      "display": "graceful-fs",
+      "homepage": "https://github.com/isaacs/node-graceful-fs",
+      "group": "libraries",
+      "license": "ISC",
+      "texts": [
+        "desktop/graceful-fs-isc.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-jsonfile",
+      "display": "jsonfile",
+      "homepage": "https://github.com/jprichardson/node-jsonfile",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/jsonfile-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-universalify",
+      "display": "universalify",
+      "homepage": "https://github.com/RyanZim/universalify",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/universalify-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-argparse",
+      "display": "argparse",
+      "homepage": "https://github.com/nodeca/argparse",
+      "group": "libraries",
+      "license": "Python-2.0",
+      "texts": [
+        "desktop/argparse-python2.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
+    },
+    {
+      "id": "npm-ms",
+      "display": "ms",
+      "homepage": "https://github.com/vercel/ms",
+      "group": "libraries",
+      "license": "MIT",
+      "texts": [
+        "desktop/ms-mit.txt"
+      ],
+      "bundledIn": "pigcloud-desktop"
     }
   ]
 }

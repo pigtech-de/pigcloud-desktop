@@ -24,13 +24,7 @@ import (
 
 const peerSealPinVersion = 1
 
-func peerSealPksPath() string {
-	dir := config.Dir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "peer_seal_pks.json")
-}
+var peerSealPins = ownerSidecar[map[string]peerSealPk]{name: "peer_seal_pks.json", version: peerSealPinVersion}
 
 type peerSealPk struct {
 	Fp string `json:"fp"`
@@ -39,11 +33,6 @@ type peerSealPk struct {
 }
 
 func (r peerSealPk) anchored() bool { return r.Ed != "" && r.Ml != "" }
-
-type peerSealPksFile struct {
-	V      int                              `json:"v"`
-	Owners map[string]map[string]peerSealPk `json:"owners"`
-}
 
 type PeerKeyBundle struct {
 	X25519    []byte
@@ -84,19 +73,19 @@ func sealStoreFailure(peer string, err error) error {
 
 var peerSealFileMu sync.Mutex
 
-func loadPeerSealPkFile() (*peerSealPksFile, error) {
-	path := peerSealPksPath()
+func loadPeerSealPkFile() (*sidecarFile[map[string]peerSealPk], error) {
+	path := peerSealPins.path()
 	if path == "" {
 		return nil, errors.New("no CLI config directory, so there is nowhere to keep the seal pins")
 	}
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return &peerSealPksFile{V: peerSealPinVersion, Owners: map[string]map[string]peerSealPk{}}, nil
+		return peerSealPins.empty(), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("read %s: %w", path, err)
 	}
-	var f peerSealPksFile
+	var f sidecarFile[map[string]peerSealPk]
 	if err := json.Unmarshal(raw, &f); err != nil {
 		return nil, fmt.Errorf("%s is not readable as a pin store: %w", path, err)
 	}
@@ -124,7 +113,7 @@ func peerSealRecord(peer string) (peerSealPk, bool, error) {
 }
 
 func writePeerSealRecord(peer string, rec peerSealPk) error {
-	path := peerSealPksPath()
+	path := peerSealPins.path()
 	owner := signingPinOwner()
 	if path == "" || owner == "" || !validPeerName(peer) {
 		return errors.New("no account key set is configured, so there is no pin bucket to write")
@@ -143,11 +132,7 @@ func writePeerSealRecord(peer string, rec peerSealPk) error {
 			f.Owners[owner] = map[string]peerSealPk{}
 		}
 		f.Owners[owner][peer] = rec
-		data, err := json.Marshal(f)
-		if err != nil {
-			return err
-		}
-		return fsutil.WriteFileAtomic(path, data, 0600)
+		return peerSealPins.store(f)
 	})
 }
 
@@ -163,7 +148,7 @@ func PeerSealPinCount() (int, error) {
 	return len(f.Owners[owner]), nil
 }
 
-func PeerSealPinStorePath() string { return peerSealPksPath() }
+func PeerSealPinStorePath() string { return peerSealPins.path() }
 
 func PinnedPeerSealFingerprint(peer string) string {
 	rec, _, err := peerSealRecord(peer)
@@ -192,6 +177,10 @@ func FingerprintDisplay(fpB64 string) string {
 }
 
 func PeerSafetyNumber(peer *PeerKeyBundle) (string, error) {
+	return defaultSession.PeerSafetyNumber(peer)
+}
+
+func (s *Session) PeerSafetyNumber(peer *PeerKeyBundle) (string, error) {
 	if !peer.usableSealKey() {
 		return "", errors.New("the served key set has no usable X25519 + ML-KEM pair")
 	}
@@ -201,7 +190,7 @@ func PeerSafetyNumber(peer *PeerKeyBundle) (string, error) {
 	}
 	myParts := [][]byte{mine.X25519[:], mine.Kyber}
 	theirParts := [][]byte{peer.X25519, peer.Kyber}
-	myEd, myMl := resolveOwnSigningPubsInteractive()
+	myEd, myMl := s.resolveOwnSigningPubs()
 	if len(myEd) > 0 && len(myMl) > 0 && len(peer.Ed25519) > 0 && len(peer.Mldsa) > 0 {
 		myParts = append(myParts, myEd, myMl)
 		theirParts = append(theirParts, peer.Ed25519, peer.Mldsa)

@@ -1,0 +1,31 @@
+{
+  "vector_kind": "hybrid_seal_v1",
+  "spec_version": 2,
+  "kdf_info": "pigcloud-hybrid-seal-v2",
+  "description": "Hybrid X25519+ML-KEM-768 sealed blob. Each conforming impl must HybridUnseal(sealed_blob_b64, recipient.sk_b64+seed_b64) and recover plaintext_b64 byte-for-byte.",
+  "generator": {
+    "impl": "go",
+    "package": "pigcloud/internal/crypto",
+    "function": "HybridSeal",
+    "tool": "cli/internal/crypto/genvec_test.go (PIGCLOUD_GEN_VECTORS=1 go test -run TestGenerateHybridSealVector)",
+    "generated_at": "2026-05-28T11:42:01Z"
+  },
+  "recipient": {
+    "x25519_pk_b64": "bM348ua3NcfNnmye5CIzm3tg5SAo5WXuoAE50P5Q+zo=",
+    "x25519_sk_b64": "VSeKRuMKeP6pbCNnKa13B7INx8jY24eQTACOu9E0W18=",
+    "mlkem_pk_b64": "YRcy0pMdcKCea+wM58WZASq3KWBmk6x1TQSfnnuhecsih8ZXJfd2Q9dWWEWBETmJiUh8IlFECzBAhQWAk0VIkWmTxDEzlaGIT6DMpVAx5WRoj1Rn/dWumgOUvadTd2aH97GWQIS3I1Z+Q7dUqMkcxhYxNNGKp4mAROOvKdBtHTxVrRxYwsRRwOQYWSlOmECdESrCr0MJotWhl6h9mMt7gCylS1gl5YZzfQtqzwg1aHSor1Q9SQlBPxcVJOAde+if81Bp8PfIkuY9c0geLzCA0Pc0/HCNz5ZxLrWEO+O8+9kWkgGI09czjVVZUDyR4SCixhLGMJScykQChLi/oKQZo7xtyHA8Zgg0lYbAkAjJmxyhw5TCohKekhQtSUs5oZB7TRGom1iY3AMBXtVgZoEELDJYNoQ2emhDwjRloJrCdVa+RNl6a7tDY9UMXlmXE1kjaIIAVRpbDplx3msNLbe/yXarf4ChqoVl4rXFg/lm1eRiGiEVdBatm+yy0fV83OkW3NqK2djPlaRbtPVxWhk/CNcd4/V2vro8sFOx3Tk0n8fIDxcj00tcI9gtSAIcmdmBOFxC1xhlL6GNvss5hMVuFcJ5VlyhueLOTYxKJuCC1DBPRzzCyak8qguJcYF9a8EcN9xHpYkOb1OoFre8YYmv9yZdvck+M8kr5HmXTjO5wwoMOUisS4ODBrqOqMY/jke1jUm3lRmEA5kf+ruiCzF94uCK0tV9E5YF/tJuDWZy/zo8BcBTvbwBChNjBNKWkDxsINORJoqy4TxD8/Z3eYde1wYAUskcMIuHDiBIcnangkBqspur0lO8j8kLkcsFVsZ0SCxRkix4OLi52it2rRtAatIPPLp+AOxJXMMqpslu+kFXMPqdVuir9gZMLWi+zVhRThKtonxM/FGibuk/3AAHDsk43iZ8buh2cjh05OoeaumNZEnNsQkae3RfdUiuhaHLiDicJ6uc7GmV+GyPJul+ClI/k5RZzpOakIpyyNi30sWUg8PCS7xSUTM9gfkOf1xYFZl0lPpk/NfMaIVB+blDV6I219yHElNZCjhXflxmwQqfSQc/IAdZOREn6uJ2RPGbNOlIbStA26YA8nEH6gGyThCzZTSUwayyp6KkUcF+WSO3YNKafNqSGykvwqcBKJArWCShGYLJ3TxNXzZw4Vdw5VssMGFwcMlqePhHw8IV5Yd8pqJ08BEXG1szDiKWj2Y+CGNX/7YbMJupZBpNzhidO7YTnzcheMii32xpZLKIU/M1YlRm1QNIL7chHFRasDgnRVhziaqtgahK1Zci2mOqPdV4EFRFuVMixIXBUBM2HCyXONo5w6YWkgx1O/YspIFt/MpIFaZJ1BKVdRoplXN4C3pJbyyQ3adBIijNf1mP/oUNX+m3XomqGtS8AYgUI2HM4oMbebbCe+uKB4Vfm7xRP1gYGwMxhBpNqikerFG8hkYk9edhN3XAB9eCJzKhdoFpzbONVQEUaWQjMXK743C+JGdKgFp6SKM64lIDA+IzJgd19AEOzeRimTmcmfzP0Np+WcwC4EG6DJxQNaNXr/vK8EzwmKUsxa8rPqulYZQG28w=",
+    "mlkem_seed_b64": "hu3ujAUYSPhuDv+tWEhQ9X2dEfPpsZeJmx87QV63szjnsDdYaSTJzc1TTBaF8GwBpW7S22lNsXMreYPxGaThqQ=="
+  },
+  "plaintext_b64": "cGlnY2xvdWQtaHlicmlkLXNlYWwtdjIgfCBjb25mb3JtYW5jZSB2ZWN0b3IgIzEgfCBVVEYtODogcMO2cmsgcMOuw6sg8J+Qtw==",
+  "sealed_blob_b64": "cV8MYrdHbwK8KyHrV9jd1DHMtUMzpR79ZqvOIqp1tj64HKuYfKf/zBcT8Ha1Co7Cf/XEqGYtgmEiAg6OgeYz6NUEnune6ryAAaeeOP6pXjLPXf7r1oriyfvqL214Yix2+HKHZYshxzpM3CuDw3fOt9nsB+IT5AbZgJhq8qP/bqWkdUgvj/7bITJpcV3/OboJYjhINHuQ+ihSzILyfiyLkiJU4aqnYzq0F1+Towg7X6mLdEbyb5fDApFyr9jj3aXeMzCMCVLBaDvGL+FUaXOrSrBaTXxTvKvbM1l0Ira9Zak/EYuT/uQv8ZPVTb5hHO/to146l/2Hv+8uCxv/vZUoiZFQEs+rBYcl53oDJyvDWoyebBxXm4LeaYn41oqj+YgXH1pdA6HmpaebfA4vQvp0VYmMI+1RaT3mugsLizzABzCRqs9UmIxNvjhB/CdjmGDStYI4/OlvxLFpLIfZcMnhcs8hIMGg7OpH/WEXdW5AqgtW/MG93gKXciUYTx+PRFduRFDjPt1EMLtzZ/xVHLxlbcGNoSymG6CLKFbvbPqPowiLopm/UOItyXMfeuaUVri8jpO+G5iSI9brGj+UeBrOC1q/Biv6KSErde5HiO/+VVgXAWWkjCRcRzY7ro4+6kXS5QDNvoX4reVP377xwn/QUyKM561GvCltZfAKPKBFeGkYc7vEvVG5n4WS/NgK4sHmt2kOBDXJ7wOevBXCX3Jl6fvN9NKKtDDCmjlkLnYpRfHzRaDxU+7FF0S5B+G4jqNTJKLOImhDRDE8ZbK3h/nunOnuBh5LKEDXVnQBfB1CEMw4EtXFocQ7Kbdu2oj3JqMA3SKwZsGTjCy/Nm8lmr4KOUQzXAHOMcaqvUFIpXVkHh4Al+cyuRKsuJVSKc75bHs8FZqgeGZaimyEoQShRzpniyRDu++KjjCzeu4FHLSfarWZOZli4oaCykbtm+qnik6HXJEkcP+h2SOQKmTP1gfcdSWe284hbalogZlUTr0saGabbUL0OifFwZ6PPF5odVZ1ebiWQ23dym5MI11YgbxTIZCQ4t6Vb5jlXeKWenKDopj/JxpHRGdVz17C+Vyx/2a9jgHMjA9eD5ljolWXtNXKLHtZCss7XLEzgVx5PeFrM3IslzOc2bCnS8guHCzfe9YdI16kz2PlAOubvhA99EY9gBcKGZaqZZpfiLDotGlXnQRbeP3tgC/B1205vNg2ybkS7B2SjWxUWnMIs7yl+XEEBNBmgRINWfMevZdAZrVuINflOhcx1esxO3kVnYweQBMcj/rWwvc3npFw5q6lqq86DwvtTPJsPp81Pmv6a/rtJha7aFbOyOWQJDxX1xm0oEwLFXU4nzjg5SchaF3puIRku9sf47ZEi7FyWoS24J5e7Rmnl0/zra15eEA/Rxkqt8DlgBQ5uUnlUx4RCLCl5pBrmckl8fHUPMLm6thbHSVAyPdVpcJI+ozthExENXNqiWG/xEhkYBto1gaRcSztbebqvoOjO+FjcQD16ELq6tLo6gMe85/gxMT5K3XGjDERrKnr4B6bsg7cDDkEYbQvv1zACMVCG9g9U/mj221E2odsrxwvHB+Ptc7xiCWTNHWnI9SZvDOuKX3BBiLf5LucwgZxUKdjPQboipGARRVqS3QDdp+D",
+  "layout": {
+    "header_size": 1144,
+    "ephemeral_x25519_pk_offset": 0,
+    "ephemeral_x25519_pk_size": 32,
+    "mlkem_ciphertext_offset": 32,
+    "mlkem_ciphertext_size": 1088,
+    "xchacha20_nonce_offset": 1120,
+    "xchacha20_nonce_size": 24,
+    "aead_ciphertext_offset": 1144
+  }
+}

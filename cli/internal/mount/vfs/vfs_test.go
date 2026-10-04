@@ -908,25 +908,6 @@ func TestEvictHooks(t *testing.T) {
 	env.fs.evictClear(999999)
 }
 
-func TestDecryptName(t *testing.T) {
-	env := newVFSEnv(t, "")
-	if got := env.fs.decryptName(""); got != "" {
-		t.Errorf("empty: %q", got)
-	}
-	if got := env.fs.decryptName("!!bad-b64"); got != "(encrypted)" {
-		t.Errorf("bad b64: %q", got)
-	}
-	if got := env.fs.decryptName(base64.StdEncoding.EncodeToString([]byte("junk"))); got != "(encrypted)" {
-		t.Errorf("junk ciphertext: %q", got)
-	}
-	if got := env.fs.decryptName(sealName(t, "ok.txt")); got != "ok.txt" {
-		t.Errorf("valid: %q", got)
-	}
-	if got := env.fs.decryptName(sealName(t, "../../etc/passwd")); got != "(encrypted)" {
-		t.Errorf("traversal name leaked: %q", got)
-	}
-}
-
 func TestAddPathTokensExpandsAncestors(t *testing.T) {
 	env := newVFSEnv(t, "")
 	opts := map[string]string{}
@@ -998,7 +979,7 @@ func e2eeFilePayload(t *testing.T, plaintext []byte) ([]byte, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload := api.DownloadPayload{
+	payload := api.DownloadPayload{DownloadResult: api.DownloadResult{
 		E2EE:             true,
 		SealedKey:        base64.StdEncoding.EncodeToString(sealedKey),
 		EncryptionMeta:   base64.StdEncoding.EncodeToString(metaJSON),
@@ -1006,7 +987,7 @@ func e2eeFilePayload(t *testing.T, plaintext []byte) ([]byte, string) {
 		SignatureMldsa:   base64.StdEncoding.EncodeToString(sigMl),
 		SigningPkEd25519: base64.StdEncoding.EncodeToString(tSignPub.Ed25519[:]),
 		SigningPkMldsa:   base64.StdEncoding.EncodeToString(tSignPub.Mldsa),
-	}
+	}}
 	raw, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatal(err)

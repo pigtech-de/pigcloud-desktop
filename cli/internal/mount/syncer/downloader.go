@@ -230,7 +230,6 @@ func (d *Downloader) walkForDownloads(ctx context.Context, node *vfs.Node, wg *s
 			d.dispatchDownload(ctx, node, wg, func(n *vfs.Node, err error) {
 				if err != nil {
 					d.recordDownloadFailure(n, err)
-					mlog.Warnf("downloader: %s: %v", n.RemotePath, err)
 					return
 				}
 				d.cacheDB.ClearSyncFailure(n.ID, cache.FailureDownload)
@@ -436,7 +435,6 @@ func (d *Downloader) walkAndSync(ctx context.Context, node *vfs.Node, downloaded
 
 	d.dispatchDownload(ctx, node, wg, func(n *vfs.Node, err error) {
 		if err != nil {
-			mlog.Warnf("downloader: initial sync: %s: %v", n.RemotePath, err)
 			d.recordDownloadFailure(n, err)
 			return
 		}
@@ -673,44 +671,15 @@ func (d *Downloader) scanLocalNewFiles() int {
 }
 
 func (d *Downloader) downloadDue(id int64) bool {
-	if id == 0 {
-		return true
-	}
-	f, err := d.cacheDB.GetSyncFailure(id, cache.FailureDownload)
-	if err != nil || f == nil {
-		return true
-	}
-	if f.Permanent {
-		return false
-	}
-	return time.Now().Unix() >= f.NextRetryAt
+	return d.cacheDB.TransferWithheld(id, cache.FailureDownload) == nil
 }
 
 func (d *Downloader) recordDownloadFailure(node *vfs.Node, err error) {
-	if node.ID == 0 || errors.Is(err, context.Canceled) || errors.Is(err, errDownloadLocalChanged) || errors.Is(err, errDownloadRemoteChanged) {
+	if errors.Is(err, errDownloadLocalChanged) || errors.Is(err, errDownloadRemoteChanged) {
+		mlog.Warnf("downloader: %s: %v", node.RemotePath, err)
 		return
 	}
-	perm := isPermanent(err)
-	attempts := 1
-	if prev, gerr := d.cacheDB.GetSyncFailure(node.ID, cache.FailureDownload); gerr == nil && prev != nil {
-		attempts = prev.Attempts + 1
-	}
-	f := &cache.SyncFailure{
-		InodeID:   node.ID,
-		Kind:      cache.FailureDownload,
-		Permanent: perm,
-		Attempts:  attempts,
-		LastError: err.Error(),
-	}
-	if perm {
-		d.cacheDB.SetSyncStatus(node.ID, cache.StatusFailed, err.Error())
-	} else {
-		f.NextRetryAt = time.Now().Add(transferBackoff(attempts)).Unix()
-		if transferBackoff(attempts) >= transferRetryCap && transferBackoff(attempts-1) < transferRetryCap {
-			mlog.Warnf("downloader: %s stalled after %d attempts, backing off hourly: %v", node.RemotePath, attempts, err)
-		}
-	}
-	d.cacheDB.RecordSyncFailure(f)
+	d.cacheDB.RecordTransferFailure("downloader", node.RemotePath, node.ID, cache.FailureDownload, err)
 }
 
 func (d *Downloader) inodeDirty(id int64) bool {

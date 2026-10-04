@@ -48,7 +48,7 @@ func TestVerifyDownloadInteractiveUsesCachedSigningKey(t *testing.T) {
 	edSig, mlSig := signCiphertext(t, priv, ct)
 	dl := ownerDownload(pub, edSig, mlSig)
 
-	cachedSigningPriv = priv
+	defaultSession.signingPriv = priv
 	if err := VerifyDownloadIntegrity(bytes.NewReader(ct), dl); err != nil {
 		t.Fatalf("valid download rejected on the interactive path: %v", err)
 	}

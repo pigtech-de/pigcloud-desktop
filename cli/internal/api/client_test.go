@@ -15,6 +15,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -310,7 +311,7 @@ func TestParseDownloadMetadata(t *testing.T) {
 		t.Errorf("bad json: %+v", r)
 	}
 
-	payload := DownloadPayload{
+	want := DownloadResult{
 		E2EE: true, SealedKey: "sk", EncryptionMeta: "em",
 		SignatureEd25519: "s1", SignatureMldsa: "s2",
 		SigningPkEd25519: "p1", SigningPkMldsa: "p2",
@@ -318,36 +319,10 @@ func TestParseDownloadMetadata(t *testing.T) {
 		TEESignatureEd25519: "t1", TEESignatureMldsa: "t2",
 		TEESigningPkEd25519: "tp1", TEESigningPkMldsa: "tp2",
 	}
-	raw, _ := json.Marshal(payload)
+	raw, _ := json.Marshal(DownloadPayload{DownloadResult: want})
 	r := parseDownloadMetadata(base64.StdEncoding.EncodeToString(raw))
-	want := &DownloadResult{
-		E2EE: true, SealedKey: "sk", EncryptionMeta: "em",
-		SignatureEd25519: "s1", SignatureMldsa: "s2",
-		SigningPkEd25519: "p1", SigningPkMldsa: "p2",
-		SignedBy:            "peer",
-		TEESignatureEd25519: "t1", TEESignatureMldsa: "t2",
-		TEESigningPkEd25519: "tp1", TEESigningPkMldsa: "tp2",
-	}
-	if *r != *want {
+	if *r != want {
 		t.Errorf("field mapping:\n got %+v\nwant %+v", r, want)
-	}
-}
-
-func TestCatPayloadAsDownloadResult(t *testing.T) {
-	p := &CatPayload{
-		E2EE: true, SealedKey: "sk", EncryptionMeta: "em",
-		SignatureEd25519: "s1", SignatureMldsa: "s2",
-		SigningPkEd25519: "p1", SigningPkMldsa: "p2",
-		TEESignatureEd25519: "t1", TEESignatureMldsa: "t2",
-		TEESigningPkEd25519: "tp1", TEESigningPkMldsa: "tp2",
-	}
-	r := p.AsDownloadResult()
-	if !r.E2EE || r.SealedKey != "sk" || r.EncryptionMeta != "em" ||
-		r.SignatureEd25519 != "s1" || r.SignatureMldsa != "s2" ||
-		r.SigningPkEd25519 != "p1" || r.SigningPkMldsa != "p2" ||
-		r.TEESignatureEd25519 != "t1" || r.TEESignatureMldsa != "t2" ||
-		r.TEESigningPkEd25519 != "tp1" || r.TEESigningPkMldsa != "tp2" {
-		t.Errorf("adapter dropped a field: %+v", r)
 	}
 }
 
@@ -366,7 +341,7 @@ func TestDownloadWritesFileAndParsesMetadata(t *testing.T) {
 	set(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Length", fmt.Sprint(len(content)))
-		w.Header().Set(HeaderCliMetadata, downloadMetaHeader(t, DownloadPayload{E2EE: true, SealedKey: "sk"}))
+		w.Header().Set(HeaderCliMetadata, downloadMetaHeader(t, DownloadPayload{DownloadResult: DownloadResult{E2EE: true, SealedKey: "sk"}}))
 		fmt.Fprint(w, content)
 	})
 
@@ -515,7 +490,7 @@ func TestDownloadToMemory(t *testing.T) {
 	client, mu, reqs, set := captureServer(t)
 	set(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set(HeaderCliMetadata, downloadMetaHeader(t, DownloadPayload{E2EE: true, EncryptionMeta: "meta"}))
+		w.Header().Set(HeaderCliMetadata, downloadMetaHeader(t, DownloadPayload{DownloadResult: DownloadResult{E2EE: true, EncryptionMeta: "meta"}}))
 		fmt.Fprint(w, "in-memory-bytes")
 	})
 
@@ -609,7 +584,7 @@ func TestShareRecipientsForNode(t *testing.T) {
 func TestStoreShareDisplayNames(t *testing.T) {
 	client, mu, reqs, set := captureServer(t)
 
-	if err := client.StoreShareDisplayNames(context.Background(), "anna", nil); err != nil {
+	if err := client.StoreShareDisplayNames(context.Background(), "anna", "", nil); err != nil {
 		t.Fatalf("empty list: %v", err)
 	}
 	mu.Lock()
@@ -619,7 +594,7 @@ func TestStoreShareDisplayNames(t *testing.T) {
 	mu.Unlock()
 
 	names := []SealedNameEntry{{NodeID: "n1", SealedDisplayName: "sealed1"}}
-	if err := client.StoreShareDisplayNames(context.Background(), "anna", names); err != nil {
+	if err := client.StoreShareDisplayNames(context.Background(), "anna", "", names); err != nil {
 		t.Fatalf("store: %v", err)
 	}
 	mu.Lock()
@@ -638,8 +613,78 @@ func TestStoreShareDisplayNames(t *testing.T) {
 	}
 
 	set(jsonResponder(400, `{"success":false}`))
-	if err := client.StoreShareDisplayNames(context.Background(), "anna", names); err == nil || !strings.Contains(err.Error(), "400") {
+	if err := client.StoreShareDisplayNames(context.Background(), "anna", "", names); err == nil || !strings.Contains(err.Error(), "400") {
 		t.Errorf("400 not surfaced: %v", err)
+	}
+
+	set(jsonResponder(200, `{"success":false,"error":"not_friends"}`))
+	if err := client.StoreShareDisplayNames(context.Background(), "anna", "", names); err == nil || !strings.Contains(err.Error(), "not_friends") {
+		t.Errorf("a 200 refusal must fail the store: %v", err)
+	}
+}
+
+func TestStoreShareDisplayNamesAnchorsEveryChunk(t *testing.T) {
+	client, mu, reqs, set := captureServer(t)
+	set(jsonResponder(200, `{"success":true,"stored":1}`))
+
+	names := make([]SealedNameEntry, ShareRowBatchMax+1)
+	for i := range names {
+		names[i] = SealedNameEntry{NodeID: "n", SealedDisplayName: "s"}
+	}
+	if err := client.StoreShareDisplayNames(context.Background(), "anna", "ab12", names); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*reqs) != 2 {
+		t.Fatalf("sent %d requests, want 2", len(*reqs))
+	}
+	for i, r := range *reqs {
+		var body struct {
+			ShareAnchorID string `json:"shareAnchorId"`
+		}
+		if json.Unmarshal(r.Body, &body) != nil || body.ShareAnchorID != "ab12" {
+			t.Errorf("chunk %d lost the share anchor: %s", i, r.Body)
+		}
+	}
+}
+
+func TestStoreShareContentKeysChunksToTheServerCap(t *testing.T) {
+	client, mu, reqs, set := captureServer(t)
+	set(jsonResponder(200, `{"success":true,"stored":1}`))
+
+	keys := make([]SealedKeyEntry, ShareRowBatchMax+1000)
+	for i := range keys {
+		keys[i] = SealedKeyEntry{NodeID: "n", SealedKey: "k"}
+	}
+	if err := client.StoreShareContentKeys(context.Background(), "anna", keys); err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	mu.Lock()
+	var sizes []int
+	for _, r := range *reqs {
+		var body struct {
+			SealedKeys []SealedKeyEntry `json:"sealedKeys"`
+		}
+		if r.URL.Query().Get("action") != "store-share-content-keys" || json.Unmarshal(r.Body, &body) != nil {
+			t.Fatalf("request = %s %s", r.URL.RawQuery, r.Body)
+		}
+		sizes = append(sizes, len(body.SealedKeys))
+	}
+	*reqs = nil
+	mu.Unlock()
+	if len(sizes) != 2 || sizes[0] != ShareRowBatchMax || sizes[1] != 1000 {
+		t.Errorf("chunk sizes = %v, want [%d 1000]", sizes, ShareRowBatchMax)
+	}
+
+	set(jsonResponder(413, `{"success":false,"error":"payload_too_large"}`))
+	if err := client.StoreShareContentKeys(context.Background(), "anna", keys); err == nil {
+		t.Fatal("a refused chunk must fail the store")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*reqs) != 1 {
+		t.Errorf("sent %d requests after a refused chunk, want 1", len(*reqs))
 	}
 }
 
@@ -647,7 +692,7 @@ func TestDeviceAuthorize(t *testing.T) {
 	client, mu, reqs, set := captureServer(t)
 	set(jsonResponder(200, `{"success":true,"device_code":"dc","user_code":"AAAA-1111","verification_uri":"https://x/activate","interval":5,"expires_in":600}`))
 
-	res, err := client.DeviceAuthorize(context.Background(), "my-laptop", "ephkey-b64")
+	res, err := client.DeviceAuthorize(context.Background(), "my-laptop", "ephkey-b64", false)
 	if err != nil {
 		t.Fatalf("device authorize: %v", err)
 	}
@@ -664,9 +709,12 @@ func TestDeviceAuthorize(t *testing.T) {
 	if json.Unmarshal(r.Body, &body) != nil || body["device_label"] != "my-laptop" || body["eph_pubkey"] != "ephkey-b64" {
 		t.Errorf("body = %s", r.Body)
 	}
+	if _, present := body["background"]; present {
+		t.Error("a CLI login must not claim the background scope")
+	}
 
 	set(jsonResponder(200, `{"success":true}`))
-	if _, err := client.DeviceAuthorize(context.Background(), "lbl", ""); err != nil {
+	if _, err := client.DeviceAuthorize(context.Background(), "lbl", "", false); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
@@ -681,7 +729,7 @@ func TestDeviceAuthorize(t *testing.T) {
 	}
 
 	set(jsonResponder(400, `{"success":false,"error":"invalid_request"}`))
-	res, err = client.DeviceAuthorize(context.Background(), "lbl", "")
+	res, err = client.DeviceAuthorize(context.Background(), "lbl", "", false)
 	if err != nil || res == nil || res.Success || res.Error != "invalid_request" {
 		t.Errorf("parseable 400: res=%+v err=%v", res, err)
 	}
@@ -689,8 +737,20 @@ func TestDeviceAuthorize(t *testing.T) {
 	set(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(500)
 	})
-	if _, err := client.DeviceAuthorize(context.Background(), "lbl", ""); err == nil {
+	if _, err := client.DeviceAuthorize(context.Background(), "lbl", "", false); err == nil {
 		t.Error("empty 500 body should error")
+	}
+
+	set(jsonResponder(200, `{"success":true}`))
+	if _, err := client.DeviceAuthorize(context.Background(), "phone", "eph", true); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	r = (*reqs)[0]
+	mu.Unlock()
+	body = nil
+	if json.Unmarshal(r.Body, &body) != nil || body["background"] != "1" {
+		t.Errorf("background flag missing: %s", r.Body)
 	}
 }
 
@@ -720,7 +780,99 @@ func TestDeviceTokenPollStates(t *testing.T) {
 	}
 }
 
+func fastAttestationRetries(t *testing.T) {
+	t.Helper()
+	saved := TeeAttestationRetryDelays
+	TeeAttestationRetryDelays = []time.Duration{time.Millisecond, time.Millisecond, time.Millisecond}
+	t.Cleanup(func() { TeeAttestationRetryDelays = saved })
+}
+
+func TestFetchTeeAttestationWaitsOutAVerifyBusy503(t *testing.T) {
+	fastAttestationRetries(t)
+	client, mu, reqs, set := captureServer(t)
+	var calls atomic.Int32
+	set(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			fmt.Fprint(w, `{"success":false,"error":"api_key_verify_busy"}`)
+			return
+		}
+		fmt.Fprint(w, `{"success":true,"enabled":true,"available":true,"attestation":{"enclave_public_key":"epk"}}`)
+	})
+
+	start := time.Now()
+	res, err := client.FetchTeeAttestation(context.Background())
+	if err != nil {
+		t.Fatalf("a single verify-busy 503 was not retried: %v", err)
+	}
+	if res.Attestation.EnclavePublicKey != "epk" {
+		t.Errorf("decoded the wrong reply: %+v", res)
+	}
+	if waited := time.Since(start); waited < 900*time.Millisecond {
+		t.Errorf("retried after %s, before the served Retry-After of 1s", waited)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*reqs) != 2 {
+		t.Errorf("requests = %d, want the refused one plus one retry", len(*reqs))
+	}
+}
+
+func TestFetchTeeAttestationNeverReturnsAFailureBodyAsAnAnswer(t *testing.T) {
+	fastAttestationRetries(t)
+	cases := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{"verify busy 503", 503, `{"success":false,"error":"api_key_verify_busy"}`},
+		{"scanner unavailable 502", 502, `{"success":false,"message":"TEE scanner unavailable"}`},
+		{"cloudflare html 520", 520, `<html>origin error</html>`},
+		{"success false at 200", 200, `{"success":false}`},
+		{"unreadable 200", 200, `not json`},
+		{"daemon busy reply relayed at 200", 200, `{"success":true,"enabled":true,"available":true,"attestation":{"verdict":"error","reason":"scanner_busy","busy":true,"retry_after_ms":1}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			client, mu, reqs, set := captureServer(t)
+			set(jsonResponder(tc.status, tc.body))
+			res, err := client.FetchTeeAttestation(context.Background())
+			if err == nil {
+				t.Fatalf("a failure reply came back as an attestation: %+v", res)
+			}
+			if !IsTransient(err) {
+				t.Errorf("error %v is not transient, so callers would not retry it", err)
+			}
+			if !strings.Contains(err.Error(), "tee_attestation_unanswered") {
+				t.Errorf("error = %q, want it to say the probe went unanswered", err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if want := len(TeeAttestationRetryDelays) + 1; len(*reqs) != want {
+				t.Errorf("requests = %d, want %d (every transient failure retried)", len(*reqs), want)
+			}
+		})
+	}
+}
+
+func TestFetchTeeAttestationDoesNotRetryAnAuthRefusal(t *testing.T) {
+	fastAttestationRetries(t)
+	client, mu, reqs, set := captureServer(t)
+	set(jsonResponder(401, `{"success":false,"error":"invalid_api_key"}`))
+	if _, err := client.FetchTeeAttestation(context.Background()); !IsPermanent(err) {
+		t.Fatalf("a 401 should be permanent, got %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*reqs) != 1 {
+		t.Errorf("requests = %d, a revoked key was re-sent", len(*reqs))
+	}
+}
+
 func TestFetchTeeAttestation(t *testing.T) {
+	fastAttestationRetries(t)
 	client, mu, reqs, set := captureServer(t)
 	set(jsonResponder(200, `{"success":true,"enabled":true,"available":true,"attestation":{"enclave_public_key":"epk","attestation_mode":"epid","verification_status":"trusted"}}`))
 

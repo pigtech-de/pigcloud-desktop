@@ -4,17 +4,11 @@ import (
 	"bytes"
 	"path/filepath"
 	"testing"
-
-	"github.com/zalando/go-keyring"
 )
 
 func hostEntry(t *testing.T, host string) (string, bool) {
 	t.Helper()
-	v, err := keyring.Get(keyringService, host)
-	if err != nil {
-		return "", false
-	}
-	return v, true
+	return testSecrets.GetSecret(host)
 }
 
 func TestSaveLoadsTheConfigInsteadOfDereferencingNil(t *testing.T) {
@@ -37,8 +31,8 @@ func TestCredentialsDoNotSurviveAnEndpointChangeThenLogout(t *testing.T) {
 
 	const oldEndpoint = "https://pigtech.de/cloud/actions.php"
 	const newEndpoint = "https://local.test/cloud/actions.php"
-	oldHost := keyringUserFor(oldEndpoint)
-	newHost := keyringUserFor(newEndpoint)
+	oldHost := secretKeyFor(oldEndpoint)
+	newHost := secretKeyFor(newEndpoint)
 	if oldHost == newHost {
 		t.Fatal("both endpoints map to one keychain user; this guard would be vacuous")
 	}
@@ -78,7 +72,7 @@ func TestEndpointChangeLeavesNoEntryUnderThePreviousHost(t *testing.T) {
 
 	const oldEndpoint = "https://pigtech.de/cloud/actions.php"
 	const newEndpoint = "https://local.test/cloud/actions.php"
-	oldHost := keyringUserFor(oldEndpoint)
+	oldHost := secretKeyFor(oldEndpoint)
 
 	if err := SetEndpoint(oldEndpoint); err != nil {
 		t.Fatalf("SetEndpoint(old): %v", err)

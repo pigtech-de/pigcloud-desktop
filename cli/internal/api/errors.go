@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+const (
+	UploadCodeDuplicate   = "duplicate"
+	UploadCodeRateLimited = "rate_limited"
+	UploadCodeScanPending = "scan_pending"
+	UploadCodeScannerBusy = "scanner_busy"
+)
+
 type ErrorKind int
 
 const (
@@ -62,6 +69,19 @@ func RateLimitDelay(attempt int, hint time.Duration) time.Duration {
 		return min(hint, MaxRateLimitDelay)
 	}
 	return time.Duration(15*(attempt+1)) * time.Second
+}
+
+const MaxScanBudgetDelay = time.Hour
+
+func ScanBudgetWait(err error) (time.Duration, bool) {
+	var apiErr *APIError
+	if !IsRateLimited(err) || !errors.As(err, &apiErr) || apiErr.Code != UploadCodeRateLimited {
+		return 0, false
+	}
+	if hint := RetryAfterHint(err); hint > 0 {
+		return min(hint, MaxScanBudgetDelay), true
+	}
+	return time.Minute, true
 }
 
 func RateLimitExceedsInlineWait(hint time.Duration) bool {

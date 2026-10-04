@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -11,18 +10,19 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/zalando/go-keyring"
 )
 
+var testSecrets = NewMemorySecretStore()
+
 func TestMain(m *testing.M) {
-	keyring.MockInit()
+	SetSecretStore(testSecrets)
 	os.Exit(m.Run())
 }
 
 func isolateConfig(t *testing.T) string {
 	t.Helper()
-	keyring.MockInit()
+	testSecrets = NewMemorySecretStore()
+	SetSecretStore(testSecrets)
 
 	dir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", dir)
@@ -34,7 +34,8 @@ func isolateConfig(t *testing.T) string {
 	cfg, configFile = nil, ""
 	t.Cleanup(func() {
 		cfg, configFile = prevCfg, prevFile
-		keyring.MockInit()
+		testSecrets = NewMemorySecretStore()
+		SetSecretStore(testSecrets)
 	})
 	return dir
 }
@@ -136,7 +137,7 @@ func TestSaveKeepsTheAPIKeyOutOfTheConfigFileWhenTheKeychainWorks(t *testing.T) 
 
 func TestSaveFallsBackToPlaintextWhenTheKeychainIsUnavailable(t *testing.T) {
 	isolateConfig(t)
-	keyring.MockInitWithError(errors.New("no secret service"))
+	SetSecretStore(nil)
 
 	const key = "pc_headless_2c8f10ab"
 	if err := SetAPIKey(key); err != nil {
@@ -171,8 +172,8 @@ func TestKeychainValueWinsOverAStaleFileValue(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"api_key":"stale-plaintext-key","endpoint":"`+DefaultEndpoint+`","cwd":"/"}`), 0o600); err != nil {
 		t.Fatalf("seed config: %v", err)
 	}
-	if err := keyring.Set(keyringService, DefaultDomain, "rotated-keychain-key"); err != nil {
-		t.Fatalf("seed keychain: %v", err)
+	if !testSecrets.SetSecret(DefaultDomain, "rotated-keychain-key") {
+		t.Fatal("seed keychain refused")
 	}
 
 	Load()
@@ -347,7 +348,7 @@ func TestClearRemovesEveryStoredCredential(t *testing.T) {
 	if !StoreE2EEDeviceKey(deviceKey) {
 		t.Fatal("mock keychain refused the device key")
 	}
-	if _, ok := keyringGet(); !ok {
+	if _, ok := loadAPIKey(); !ok {
 		t.Fatal("API key never reached the keychain; the assertions below would prove nothing")
 	}
 
@@ -361,7 +362,7 @@ func TestClearRemovesEveryStoredCredential(t *testing.T) {
 	if IsLoggedIn() {
 		t.Error("still logged in after Clear")
 	}
-	if _, ok := keyringGet(); ok {
+	if _, ok := loadAPIKey(); ok {
 		t.Error("API key survived logout in the OS keychain")
 	}
 	if _, ok := LoadE2EEDeviceKey(); ok {
@@ -404,9 +405,7 @@ func TestDeviceKeyStorageIsStrictAboutSizeAndEncoding(t *testing.T) {
 		"odd digit count": hex.EncodeToString(key)[:63],
 	}
 	for name, value := range corrupt {
-		if err := keyring.Set(keyringService, e2eeKeyringUser(), value); err != nil {
-			t.Fatalf("seed keychain: %v", err)
-		}
+		testSecrets.values[e2eeSecretKey()] = value
 		if b, ok := LoadE2EEDeviceKey(); ok {
 			t.Errorf("accepted a %s device key from the keychain, returning %d bytes", name, len(b))
 		}

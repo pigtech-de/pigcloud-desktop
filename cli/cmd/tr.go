@@ -70,7 +70,7 @@ func runTree(targetPath string) {
 		options["all"] = "true"
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	resp, payload := cmdutil.ExecuteCommand[api.TreePayload](ctx, "tr", options, ExitWithError)
 
@@ -84,9 +84,7 @@ func runTree(targetPath string) {
 
 func decryptTreeEntries(entries []api.TreeEntry) {
 	for i := range entries {
-		if entries[i].E2EEDisplayName != "" {
-			entries[i].Name = e2ee.DecryptE2EEName(entries[i].E2EEDisplayName)
-		}
+		entries[i].Name = e2ee.ResolveName(entries[i].E2EEDisplayName, entries[i].Name)
 		if len(entries[i].Children) > 0 {
 			decryptTreeEntries(entries[i].Children)
 		}

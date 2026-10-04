@@ -12,6 +12,9 @@ const transferRetryCap = cache.TransferRetryCap
 func transferBackoff(attempts int) time.Duration { return cache.TransferBackoff(attempts) }
 
 func writebackRetryDelay(err error, attempts int) time.Duration {
+	if wait, spent := api.ScanBudgetWait(err); spent {
+		return wait
+	}
 	if api.IsRateLimited(err) {
 		return api.RateLimitDelay(attempts-1, api.RetryAfterHint(err))
 	}

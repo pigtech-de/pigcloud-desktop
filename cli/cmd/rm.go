@@ -141,7 +141,7 @@ func runRmSingle(ctx context.Context, targetPath string) {
 		options["dry-run"] = "true"
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.RemovePayload](ctx, "rm", options, ExitWithError)
 

@@ -2,7 +2,7 @@ import {realpath, stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {IPC_PREFIX, requireTrustedSender, requireObject} from './host-policy.mjs';
 
-export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capabilities, openCloud, openUpdates, openAccountSettings, login, loginCli, cancelLoginCli, shell, t = key => key, inspectPath = realpath, inspectStat = stat}) {
+export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capabilities, openCloud, openUpdates, openAccountSettings, login, loginCli, cancelLoginCli, shell, updates, reportAppearance, currentAppearance = () => null, t = key => key, inspectPath = realpath, inspectStat = stat}) {
     const channels = [];
     const folders = new Set();
     let picker = null;
@@ -15,7 +15,11 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
             return operation(value, event);
         });
     };
-    for (const name of ['getSettings', 'status']) add(name, () => engine[name]());
+    add('getSettings', () => engine.getSettings());
+    add('status', async () => {
+        const snapshot = await engine.status();
+        return updates ? {...snapshot, updates: updates.snapshot()} : snapshot;
+    });
     const shapes = {
         start: ['pairId'], stop: ['pairId'], unlock: ['password'], files: ['pairId'],
         activity: ['pairId'], conflicts: ['pairId'], resolve: ['pairId', 'path', 'choice'],
@@ -25,8 +29,12 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
         add(name, value => engine[name](requireObject(value ?? {}, shape)));
     }
     add('capabilities', () => capabilities());
+    if (reportAppearance) {
+        add('reportAppearance', value => reportAppearance(requireObject(value, ['theme', 'base', 'background', 'surface'])));
+        add('getAppearance', () => currentAppearance());
+    }
     add('saveSettings', async (value, event) => {
-        requireObject(value, ['revision', 'pairs', 'pollInterval', 'launchOnStartup', 'minimizeToTray']);
+        requireObject(value, ['revision', 'pairs', 'pollInterval', 'launchOnStartup', 'minimizeToTray', 'allowPrerelease']);
         if (!Array.isArray(value.pairs)) throw new Error('Invalid sync folders.');
         const current = await engine.getSettings();
         for (const pair of value.pairs) {
@@ -86,6 +94,10 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
     });
     add('openCloud', () => openCloud());
     add('openUpdates', () => openUpdates());
+    if (updates) {
+        add('checkUpdates', () => updates.check());
+        add('installUpdate', () => updates.install());
+    }
     add('openAccountSettings', () => openAccountSettings());
     add('login', () => login());
     add('loginCli', () => loginCli());

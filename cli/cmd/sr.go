@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
 
 	"pigcloud/internal/api"
@@ -157,43 +155,63 @@ func runShareAdd(targetPath, username string) {
 		"permissions": sharePermission,
 	}
 
+	var keys []api.SealedKeyEntry
+	var names []api.SealedNameEntry
 	if e2ee.HasE2EEKeys() {
-		sealedKeys, sealedNames := resealKeysAndNamesForRecipient(ctx, resolvedPath, username)
-		if sealedKeys != "" {
-			options["sealed_keys"] = sealedKeys
-		}
-		if sealedNames != "" {
-			options["sealed_names"] = sealedNames
-		}
+		keys, names = resealKeysAndNamesForRecipient(ctx, resolvedPath, username)
+		setFirstShareBatch(options, "sealed_keys", keys)
+		setFirstShareBatch(options, "sealed_names", names)
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.SharePayload](ctx, "sr", options, ExitWithError)
 
 	if payload.Status == "revoked" {
 		output.PrintSuccess("Revoked sharing of " + output.PrintPath(payload.Path) + " from " + payload.Username)
-	} else {
-		output.PrintSuccess("Shared " + output.PrintPath(payload.Path) + " with " + payload.Username + " (" + payload.Permission + ")")
+		return
+	}
+	storeShareOverflow(ctx, username, payload.NodeID, keys, names)
+	output.PrintSuccess("Shared " + output.PrintPath(payload.Path) + " with " + payload.Username + " (" + payload.Permission + ")")
+}
+
+func setFirstShareBatch[T any](options map[string]string, option string, rows []T) {
+	if len(rows) == 0 {
+		return
+	}
+	if data, err := json.Marshal(rows[:min(len(rows), api.ShareRowBatchMax)]); err == nil {
+		options[option] = string(data)
 	}
 }
 
-func resealKeysAndNamesForRecipient(ctx context.Context, folderPath, recipientUsername string) (string, string) {
+func storeShareOverflow(ctx context.Context, username, anchorHex string, keys []api.SealedKeyEntry, names []api.SealedNameEntry) {
+	client := api.NewClient()
+	err := client.StoreShareContentKeys(ctx, username, keys[min(len(keys), api.ShareRowBatchMax):])
+	if err == nil {
+		err = client.StoreShareDisplayNames(ctx, username, anchorHex, names[min(len(names), api.ShareRowBatchMax):])
+	}
+	if err != nil {
+		output.PrintError("Shared, but some encryption keys did not reach " + username + ": " + err.Error())
+		ExitWithError()
+	}
+}
+
+func resealKeysAndNamesForRecipient(ctx context.Context, folderPath, recipientUsername string) ([]api.SealedKeyEntry, []api.SealedNameEntry) {
 	client := api.NewClient()
 
 	pubkeyResp, err := client.FetchPublicKey(ctx, recipientUsername)
 	if err != nil || !pubkeyResp.Success {
-		return "", ""
+		return nil, nil
 	}
 	var pubkeyPayload api.E2EEPubkeyPayload
 	if err := json.Unmarshal(pubkeyResp.Raw, &pubkeyPayload); err != nil {
-		return "", ""
+		return nil, nil
 	}
 	recipientPubKey, err := e2ee.PinPeerSealKeyFromPubkey(recipientUsername, &pubkeyPayload)
 	if err != nil {
 		output.PrintError(err.Error())
 		ExitWithError()
-		return "", ""
+		return nil, nil
 	}
 
 	keysResp, err := client.Execute(ctx, "e2ee_list_keys", map[string]string{
@@ -202,35 +220,27 @@ func resealKeysAndNamesForRecipient(ctx context.Context, folderPath, recipientUs
 		"include_dirs":  "1",
 	})
 	if err != nil || !keysResp.Success {
-		return "", ""
+		return nil, nil
 	}
 	var keysPayload api.E2EEListKeysPayload
 	if err := json.Unmarshal(keysResp.Raw, &keysPayload); err != nil {
-		return "", ""
+		return nil, nil
 	}
 	if len(keysPayload.Keys) == 0 {
-		return "", ""
+		return nil, nil
 	}
 
-	_, privKey := e2ee.GetKeyPair(ExitWithError)
+	_, privKey := cmdutil.GetKeyPair(ExitWithError)
 
-	type sealedKeyEntry struct {
-		NodeID    string `json:"node_id"`
-		SealedKey string `json:"sealed_key"`
-	}
-	type sealedNameEntry struct {
-		NodeID            string `json:"node_id"`
-		SealedDisplayName string `json:"sealed_display_name"`
-	}
-	var keyEntries []sealedKeyEntry
-	var nameEntries []sealedNameEntry
+	var keyEntries []api.SealedKeyEntry
+	var nameEntries []api.SealedNameEntry
 
 	for _, k := range keysPayload.Keys {
 		if k.SealedKey != "" {
 			if sealedBytes, err := base64.StdEncoding.DecodeString(k.SealedKey); err == nil {
 				if dataKey, err := crypto.UnsealDataKey(sealedBytes, privKey); err == nil {
 					if reSealed, err := crypto.SealDataKey(dataKey, recipientPubKey); err == nil {
-						keyEntries = append(keyEntries, sealedKeyEntry{
+						keyEntries = append(keyEntries, api.SealedKeyEntry{
 							NodeID:    k.NodeID,
 							SealedKey: base64.StdEncoding.EncodeToString(reSealed),
 						})
@@ -242,7 +252,7 @@ func resealKeysAndNamesForRecipient(ctx context.Context, folderPath, recipientUs
 			if sealedNameBytes, err := base64.StdEncoding.DecodeString(k.E2EEDisplayName); err == nil {
 				if plaintext, err := crypto.UnsealDisplayName(sealedNameBytes, privKey); err == nil {
 					if reSealed, err := crypto.SealDisplayName(plaintext, recipientPubKey); err == nil {
-						nameEntries = append(nameEntries, sealedNameEntry{
+						nameEntries = append(nameEntries, api.SealedNameEntry{
 							NodeID:            k.NodeID,
 							SealedDisplayName: base64.StdEncoding.EncodeToString(reSealed),
 						})
@@ -252,18 +262,7 @@ func resealKeysAndNamesForRecipient(ctx context.Context, folderPath, recipientUs
 		}
 	}
 
-	var keysJSON, namesJSON string
-	if len(keyEntries) > 0 {
-		if data, err := json.Marshal(keyEntries); err == nil {
-			keysJSON = string(data)
-		}
-	}
-	if len(nameEntries) > 0 {
-		if data, err := json.Marshal(nameEntries); err == nil {
-			namesJSON = string(data)
-		}
-	}
-	return keysJSON, namesJSON
+	return keyEntries, nameEntries
 }
 
 func runShareList(targetPath string) {
@@ -286,7 +285,7 @@ func runShareRemove(targetPath, username string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	resolvedPath := cmdutil.ResolvePath(targetPath)
@@ -295,7 +294,7 @@ func runShareRemove(targetPath, username string) {
 		"username": username,
 		"mode":     "remove",
 	}
-	e2ee.AddPathTokensFor(srRmOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(srRmOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
 	_, payload := cmdutil.ExecuteCommand[api.SharePayload](ctx, "sr", srRmOpts, ExitWithError)
 
 	output.PrintSuccess("Removed " + payload.Username + " from " + output.PrintPath(payload.Path))
@@ -311,9 +310,7 @@ func runShareInbox() {
 
 	for i := range payload.Shares {
 		s := &payload.Shares[i]
-		if s.E2EEDisplayName != "" {
-			s.Name = e2ee.DecryptE2EEName(s.E2EEDisplayName)
-		}
+		s.Name = e2ee.ResolveName(s.E2EEDisplayName, s.Name)
 	}
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
@@ -394,10 +391,7 @@ func receivedShareNodeID(ctx context.Context, targetPath, owner string) string {
 		if entry.NodeID == "" || !strings.EqualFold(entry.Owner, owner) {
 			continue
 		}
-		name := entry.Name
-		if entry.E2EEDisplayName != "" {
-			name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-		}
+		name := e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
 		if !strings.EqualFold(entry.NodeID, wanted) && !strings.EqualFold(name, wanted) {
 			continue
 		}

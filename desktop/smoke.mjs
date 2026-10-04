@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createServer} from 'node:http';
 import {once} from 'node:events';
 import {createDesktopHost} from './host.mjs';
+import {CLOUD_URL, OFFLINE_URL} from './host-policy.mjs';
 
 async function run() {
 const profile = await mkdtemp(join(tmpdir(), 'desktop-host-smoke-'));
@@ -13,6 +14,8 @@ electron.app.setPath('userData', profile);
 electron.app.disableHardwareAcceleration();
 const errors = [];
 const opened = [];
+const startOnline = process.argv.includes('--online-start');
+const navigation = [];
 let disconnected = false;
 let subscriber;
 let disposed = false;
@@ -21,7 +24,7 @@ let finishInitialization;
 let startCalls = 0;
 const initialization = new Promise(resolve => {finishInitialization = resolve;});
 const settings = {revision: 1, pairs: [{id: 'documents', remotePath: '/Documents', mountPoint: join(profile, 'Documents')}],
-    pollInterval: 5, launchOnStartup: false, minimizeToTray: false, cliAvailable: true, cliPath: 'bundled pc'};
+    pollInterval: 5, launchOnStartup: false, minimizeToTray: true, cliAvailable: true, cliPath: 'bundled pc'};
 const snapshot = {revision: 1, state: 'running', notice: null, cliAvailable: true, pairs: settings.pairs.map(pair => ({...pair,
     state: 'running', error: null, status: {online: true, pendingCount: 0, failedCount: 0, failedDownloadCount: 0,
         deferredCount: 0, nextDueSeconds: 0, cacheUsed: 0, cacheMax: 1073741824, lastPoll: 0, uptime: 60}}))};
@@ -36,6 +39,13 @@ const engine = {
 };
 let partition;
 const shim = {...electron,
+    BrowserWindow: class {
+        constructor(options) {
+            const window = new electron.BrowserWindow(options);
+            window.webContents.on('did-navigate', (_event, url) => navigation.push(url));
+            return window;
+        }
+    },
     shell: {...electron.shell, openExternal: async url => {opened.push(url);}},
     session: {fromPartition: name => {
         partition = electron.session.fromPartition(name);
@@ -54,18 +64,19 @@ const watchdog = setTimeout(() => {
 }, 30000);
 try {
     console.log('Starting isolated desktop host.');
-    host = await createDesktopHost(shim, () => engine, {offline: true, hidden: true});
-    console.log('Loaded bundled settings.');
+    host = await createDesktopHost(shim, () => engine, {offline: !startOnline, hidden: true});
+    console.log(startOnline ? 'Loaded cloud first without opening Sync.' : 'Loaded bundled settings.');
     host.window.webContents.on('console-message', event => {
         if (event.level === 'error' && !event.message.includes('Electron Security Warning')) errors.push(event.message);
     });
     const inspect = script => host.window.webContents.executeJavaScript(script);
-    assert.match(host.window.webContents.getURL(), /^pigcloud-app:\/\/settings\//);
+    assert.deepEqual(navigation, [startOnline ? CLOUD_URL : OFFLINE_URL]);
     assert.equal(initialized, false);
     assert.equal(await inspect('typeof window.PigcloudSyncEngine.start'), 'function');
     await inspect(`window.PigcloudSyncEngine.start({}).then(() => {window.desktopStartFinished = true;}); true`);
     await inspect('new Promise(resolve => setTimeout(resolve, 50))');
-    assert.ok(await inspect("document.querySelector('#settings-page').getBoundingClientRect().width > 0"));
+    if (startOnline) assert.equal(await inspect("document.querySelector('#settings-page')"), null);
+    else assert.ok(await inspect("document.querySelector('#settings-page').getBoundingClientRect().width > 0"));
     assert.equal(startCalls, 0);
     assert.equal(await inspect('Boolean(window.desktopStartFinished)'), false);
     initialized = true;
@@ -73,6 +84,13 @@ try {
     assert.equal(await host.ready, true);
     await inspect('new Promise(resolve => setTimeout(resolve, 50))');
     assert.equal(startCalls, 1);
+    const hide = host.window.hide.bind(host.window);
+    let hiddenByMinimize = false;
+    host.window.hide = () => {hiddenByMinimize = true; hide();};
+    host.window.emit('minimize');
+    assert.equal(hiddenByMinimize, false);
+    host.window.hide = hide;
+    if (startOnline) await host.window.loadURL(OFFLINE_URL);
     console.log('Loaded shared UI before initialization and queued native operations safely.');
     await inspect(`new Promise((resolve, reject) => {
         const deadline = Date.now() + 8000;

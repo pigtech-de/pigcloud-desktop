@@ -31,7 +31,7 @@ func IsExistingDirectory(ctx context.Context, remotePath string) bool {
 		return true
 	}
 	options := map[string]string{"source": remotePath}
-	e2ee.AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, func() {})
+	AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, func() {})
 	client := api.NewClient()
 	resp, err := client.Execute(ctx, "in", options)
 	if err != nil || resp == nil || !resp.Success {
@@ -147,7 +147,7 @@ func RenderServerDisplay(resp *api.Response) bool {
 	if err := json.Unmarshal(probe.Display, &blocks); err != nil || len(blocks) == 0 {
 		return false
 	}
-	if output.HasNameRefs(blocks) && !e2ee.EnsureNamesReadable() {
+	if output.HasNameRefs(blocks) && !EnsureNamesReadable() {
 		return true
 	}
 	output.RenderDisplay(os.Stdout, blocks, e2ee.DecryptE2EEName)
@@ -197,12 +197,16 @@ func RunPathCommand[T any](spec PathCommand) (*api.Response, T, bool) {
 		"mode":   spec.Mode,
 	}
 	maps.Copy(options, spec.Options)
-	e2ee.AddPathTokensFor(options, resolvedPath, spec.Scope, spec.ExitFn)
+	AddPathTokensFor(options, resolvedPath, spec.Scope, spec.ExitFn)
 	resp, payload := ExecuteCommand[T](ctx, spec.Command, options, spec.ExitFn)
 	return resp, payload, PrintJSONOrContinue(spec.JSON, payload)
 }
 
 func StartAuthed(exitFn func()) (context.Context, context.CancelFunc) {
 	RequireLogin(exitFn)
+	return InterruptContext()
+}
+
+func InterruptContext() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), os.Interrupt)
 }

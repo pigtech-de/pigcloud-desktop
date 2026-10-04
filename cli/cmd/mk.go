@@ -52,13 +52,13 @@ func runMk(targetPath string) {
 				nonEmpty = append(nonEmpty, s)
 			}
 		}
-		e2ee.AddE2eeNameFieldsForMkParents(options, nonEmpty, ExitWithError)
+		cmdutil.AddE2eeNameFieldsForMkParents(options, nonEmpty, ExitWithError)
 	} else {
 		fullPath, baseName := e2ee.ResolveAndBaseName(resolvedPath)
-		e2ee.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
+		cmdutil.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.CdPayload](ctx, "mk", options, ExitWithError)
 

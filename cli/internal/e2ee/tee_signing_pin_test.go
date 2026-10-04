@@ -270,7 +270,7 @@ func TestTeeSigningSidecarDeletionReAnchorsOnTheCurrentKey(t *testing.T) {
 		t.Fatalf("first contact refused: %v", err)
 	}
 
-	if err := os.Remove(teeSigningPksPath()); err != nil {
+	if err := os.Remove(teeSigningPins.path()); err != nil {
 		t.Fatalf("removing the sidecar: %v", err)
 	}
 	newEd, newMl := servedPair(t)
@@ -377,7 +377,7 @@ func TestTeeSigningOfferRefusesAGarbageServedKey(t *testing.T) {
 func TestTeeSigningRepinAlsoMovesTheSealingPosture(t *testing.T) {
 	withIsolatedPinStore(t)
 	forgetAttestedSigningPk(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	first := rebuiltEnclave(t)
 	var answer atomic.Pointer[signingAnswer]
 	answer.Store(&first)
@@ -413,7 +413,7 @@ func TestTeeSigningRepinAlsoMovesTheSealingPosture(t *testing.T) {
 
 func TestTeeAttestationPostureErrorNamesTheRepinVerb(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	first := rebuiltEnclave(t)
 	var answer atomic.Pointer[signingAnswer]
 	answer.Store(&first)

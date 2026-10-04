@@ -144,19 +144,6 @@ func TestValidateDirName(t *testing.T) {
 	}
 }
 
-func TestIsSafeName_Escapes(t *testing.T) {
-	for _, bad := range []string{"", ".", "..", "../etc", "a/b", "a\\b", "x\x00y"} {
-		if IsSafeName(bad) {
-			t.Errorf("IsSafeName(%q) = true, want false (path escape)", bad)
-		}
-	}
-	for _, good := range []string{"report.txt", "Fotos", "my_file-1.pdf"} {
-		if !IsSafeName(good) {
-			t.Errorf("IsSafeName(%q) = false, want true", good)
-		}
-	}
-}
-
 func TestIsExcludedDir(t *testing.T) {
 	if !IsExcludedDir(".Trash") {
 		t.Error(".Trash should be excluded")

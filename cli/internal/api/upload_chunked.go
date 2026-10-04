@@ -52,9 +52,11 @@ var scanPendingMaxWait = 15 * time.Minute
 
 var scanPendingDefaultWait = 2 * time.Second
 
+const scanBudgetMaxWaits = 2
+
 func scannerShedWait(err error) (time.Duration, bool) {
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != "scanner_busy" {
+	if !errors.As(err, &apiErr) || apiErr.Code != UploadCodeScannerBusy {
 		return 0, false
 	}
 	if wait := RetryAfterHint(err); wait > 0 {
@@ -296,6 +298,7 @@ func (c *Client) finalizeChunkedUpload(ctx context.Context, session *webUploadSe
 		return nil, err
 	}
 	deadline := time.Now().Add(scanPendingMaxWait)
+	budgetWaits := 0
 	var result *webUploadResult
 	var status int
 	for {
@@ -306,6 +309,10 @@ func (c *Client) finalizeChunkedUpload(ctx context.Context, session *webUploadSe
 		var pending *scanPendingError
 		if errors.As(err, &pending) {
 			wait, waiting = pending.RetryAfter, true
+		} else if budget, spent := ScanBudgetWait(err); spent && !c.parkScanBudget && budgetWaits < scanBudgetMaxWaits && (c.waitOutScanBudget || budget <= scanPendingMaxWait) {
+			budgetWaits++
+			wait, waiting = budget, true
+			deadline = deadline.Add(budget)
 		} else {
 			wait, waiting = scannerShedWait(err)
 		}
@@ -350,7 +357,7 @@ func duplicateUnderForce(err error, options map[string]string) error {
 		return err
 	}
 	var apiErr *APIError
-	if !errors.As(err, &apiErr) || apiErr.Code != "duplicate" {
+	if !errors.As(err, &apiErr) || apiErr.Code != UploadCodeDuplicate {
 		return err
 	}
 	replaced := &APIError{
@@ -402,7 +409,7 @@ func (c *Client) postUploadForm(ctx context.Context, session *webUploadSession, 
 	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, resp.StatusCode, statusError(resp, rejectionError(resp.StatusCode, respBody))
 	}
-	if resp.StatusCode == http.StatusAccepted && result.ErrorCode == "scan_pending" {
+	if resp.StatusCode == http.StatusAccepted && result.ErrorCode == UploadCodeScanPending {
 		return nil, resp.StatusCode, &scanPendingError{RetryAfter: scanPendingWait(resp, &result)}
 	}
 	if !result.Success {
@@ -421,7 +428,7 @@ func (c *Client) postUploadForm(ctx context.Context, session *webUploadSession, 
 	return &result, resp.StatusCode, nil
 }
 
-var permanentUploadCodes = map[string]bool{"duplicate": true}
+var permanentUploadCodes = map[string]bool{UploadCodeDuplicate: true}
 
 func uploadRejectionKind(status int, errorCode string) ErrorKind {
 	if status != http.StatusOK {
@@ -480,6 +487,9 @@ func withUploadRetryStatus(ctx context.Context, fn func() (*webUploadResult, int
 			return nil, status, err
 		}
 		if _, shed := scannerShedWait(err); shed {
+			return nil, status, err
+		}
+		if _, spent := ScanBudgetWait(err); spent {
 			return nil, status, err
 		}
 		var wait time.Duration

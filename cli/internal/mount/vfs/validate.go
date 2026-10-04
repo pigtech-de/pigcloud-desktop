@@ -16,9 +16,12 @@ const (
 var validNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_ äöüÄÖÜß.-]+$`)
 
 var ExcludedDirs = map[string]bool{
-	".Trash":     true,
-	".Favorites": true,
-	".Recents":   true,
+	".Trash":        true,
+	".Favorites":    true,
+	".Recents":      true,
+	".SharedByMe":   true,
+	".SharedWithMe": true,
+	".Gallery":      true,
 }
 
 func ValidateFile(name string, size int64) (bool, string) {
@@ -53,14 +56,4 @@ func ValidateDirName(name string) (bool, string) {
 
 func IsExcludedDir(name string) bool {
 	return ExcludedDirs[name]
-}
-
-func IsSafeName(name string) bool {
-	if name == "" || name == "." || name == ".." {
-		return false
-	}
-	if strings.ContainsAny(name, "/\\\x00") {
-		return false
-	}
-	return isSafeNamePlatform(name)
 }

@@ -86,6 +86,7 @@
     -moz-appearance: textfield;
     appearance: textfield;
     background: var(--background-color);
+    --ring-offset: -2px;
 }
 
 .account-activity-page-input::-webkit-inner-spin-button,
@@ -94,21 +95,10 @@
     margin: 0;
 }
 
-.account-activity-page-input:focus-visible {
-    outline: 2px solid var(--focus-color);
-    outline-offset: -2px;
-}
-
 .account-filter-row {
     --gap: var(--space-16);
     flex-wrap: wrap;
     margin-bottom: var(--space-8);
-}
-
-.account-filter-row .filter-group {
-    display: flex;
-    align-items: center;
-    gap: var(--space-8);
 }
 
 .account-filter-row .sort-label {
@@ -541,6 +531,14 @@
         padding: clamp(var(--space-16), 2vw, var(--space-32));
         padding-left: 0;
     }
+
+    body.mobile-app .settings-page-layout {
+        grid-template-columns: 240px minmax(0, 1fr);
+    }
+
+    body.mobile-app .settings-help-rail {
+        display: none;
+    }
 }
 
 .settings-help-header {
@@ -581,10 +579,12 @@
     flex-shrink: 0;
 }
 
-.settings-help-card-toggle {
-    --gap: var(--space-12);
+.settings-help-card-toggle,
+.keybinds-category-header,
+.guide-category-header {
+    --gap: var(--space-10);
     width: 100%;
-    padding: var(--space-14) var(--space-16);
+    padding: var(--space-12) var(--space-16);
     background: none;
     color: var(--text-color);
     font-size: var(--font-size-md);
@@ -595,8 +595,19 @@
 }
 
 .settings-help-card-toggle:hover,
-.settings-help-card-toggle:focus-visible {
+.settings-help-card-toggle:focus-visible,
+.keybinds-category-header:hover,
+.guide-category-header:hover {
     background-color: var(--surface-focus);
+}
+
+.settings-help-card-toggle {
+    --gap: var(--space-12);
+    padding: var(--space-14) var(--space-16);
+}
+
+.guide-category-header {
+    padding: var(--space-12) var(--space-14);
 }
 
 .settings-help-card-toggle > i:first-child {
@@ -618,11 +629,22 @@
     border-radius: var(--radius-xs);
 }
 
-.settings-help-card-chevron {
+.settings-help-card-chevron,
+.keybinds-chevron,
+.guide-category-chevron {
+    margin-left: auto;
     font-size: var(--font-size-2xs);
     color: var(--text-secondary);
     transition: transform var(--transition-fast);
+}
+
+.settings-help-card-chevron {
     flex-shrink: 0;
+}
+
+.keybinds-category-header[aria-expanded="false"] .keybinds-chevron,
+.guide-category-header[aria-expanded="false"] .guide-category-chevron {
+    transform: rotate(-90deg);
 }
 
 .settings-help-card-toggle[aria-expanded="true"] .settings-help-card-chevron {
@@ -1019,12 +1041,7 @@
 }
 
 .account-subscription-progress-bar {
-    height: 100%;
-    width: 100%;
-    background-color: var(--primary-color);
-    transform: scaleX(var(--progress, 0));
-    transform-origin: left;
-    transition: transform var(--transition-slow);
+    border-radius: 0;
 }
 
 .account-subscription-note {
@@ -1042,6 +1059,7 @@
     flex: 1 1 160px;
 }
 
+.subscription-status-badge,
 .account-subscription-status-badge {
     display: inline-flex;
     padding: var(--space-4) var(--space-12);
@@ -1052,22 +1070,25 @@
     letter-spacing: 0.05em;
 }
 
+.subscription-status-badge.status-active,
 .account-subscription-status-badge.status-active {
     background-color: var(--success-color);
     color: var(--on-success-color);
 }
 
-.account-subscription-status-badge.status-cancelling,
-.account-subscription-status-badge.status-paused {
+.subscription-status-badge:is(.status-cancelling, .status-paused),
+.account-subscription-status-badge:is(.status-cancelling, .status-paused) {
     background-color: var(--warning-color);
     color: var(--on-warning-color);
 }
 
+.subscription-status-badge.status-past-due,
 .account-subscription-status-badge.status-past-due {
     background-color: var(--error-color);
     color: var(--on-error-color);
 }
 
+.subscription-status-badge.status-gifted,
 .account-subscription-status-badge.status-gifted {
     background-color: var(--selected-color);
     color: var(--primary-ink);
@@ -1194,7 +1215,8 @@
     letter-spacing: 0.04em;
 }
 
-.account-security-item.is-current .account-security-badge {
+.account-security-item.is-current .account-security-badge,
+.account-security-badge.is-current {
     background-color: var(--primary-color);
     color: var(--on-primary-color);
 }
@@ -1265,37 +1287,11 @@
     background-color: var(--background-color);
 }
 
-.account-activity-tools {
-    position: absolute;
-    top: 4px;
-    right: 4px;
-    display: flex;
-    gap: var(--space-2);
-    padding: var(--space-2);
-    border-radius: var(--radius-pill);
-    background: var(--surface-color);
-    box-shadow: 0 1px 3px var(--shadow-color);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity var(--transition-fast);
-}
-
-.account-activity-item:hover .account-activity-tools,
-.account-activity-item:focus-within .account-activity-tools {
-    opacity: 1;
-    pointer-events: auto;
-}
-
-.account-activity-tool {
-    width: 26px;
-    height: 26px;
-    border-radius: 50%;
-}
-
-.account-activity-tool i {
+.account-activity-item .row-actions i {
     margin: 0;
     width: auto;
-    font-size: var(--font-size-sm);
+    font-size: inherit;
+    color: inherit;
 }
 
 .account-activity-item i {
@@ -1343,17 +1339,6 @@
     .account-activity-meta {
         flex-basis: 100%;
         padding-left: calc(var(--space-20) + var(--space-12));
-    }
-}
-
-@media (pointer: coarse) {
-    .account-activity-tools {
-        opacity: 1;
-        pointer-events: auto;
-    }
-
-    .account-activity-content {
-        padding-right: var(--space-64);
     }
 }
 
@@ -1449,7 +1434,7 @@
     }
 }
 
-.settings-page .btn {
+.settings-page .btn:not(.btn-primary, .btn-secondary, .is-danger) {
     --btn-background: var(--surface-muted);
     --btn-color: var(--text-color);
     --btn-hover-background: color-mix(in srgb, var(--primary-color) 18%, var(--surface-muted));
@@ -1489,6 +1474,21 @@
     font-size: var(--font-size-xs);
     color: var(--text-secondary);
     line-height: 1.4;
+}
+
+.settings-option.is-disabled > .settings-option-icon,
+.settings-option.is-disabled > .settings-option-info {
+    opacity: var(--opacity-disabled);
+}
+
+@media (max-width: 640px) {
+    .settings-option:has(> .settings-option-control > .segmented) {
+        flex-wrap: wrap;
+    }
+
+    .settings-option:has(> .settings-option-control > .segmented) > .settings-option-control {
+        flex-basis: 100%;
+    }
 }
 
 .settings-option-size {
@@ -1555,6 +1555,76 @@ body.cloud-app .settings-cloud-note {
     flex-shrink: 0;
     margin-top: var(--space-2);
     color: var(--warning-color);
+}
+
+.settings-option-warning.is-success {
+    color: var(--success-ink);
+    background-color: color-mix(in srgb, var(--success-color) 14%, var(--surface-muted));
+}
+
+.settings-option-warning.is-success i {
+    color: var(--success-color);
+}
+
+@layer components {
+    .row-actions-host {
+        position: relative;
+    }
+
+    .row-actions {
+        position: absolute;
+        top: var(--space-4);
+        right: var(--space-4);
+        z-index: var(--z-base);
+        display: flex;
+        gap: var(--space-2);
+        padding: var(--space-2);
+        border-radius: var(--radius-pill);
+        background-color: var(--surface-elevated);
+        color: var(--text-secondary);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity var(--transition-fast);
+    }
+
+    .row-actions.is-inline {
+        position: static;
+        align-self: center;
+        margin-left: auto;
+        padding: 0;
+        background-color: transparent;
+    }
+
+    .row-actions-host:has(:focus-visible) > .row-actions,
+    .row-actions-host.is-actions-open > .row-actions {
+        opacity: 1;
+        pointer-events: auto;
+    }
+
+    .icon-button.row-actions-btn {
+        width: var(--control-size-xs);
+        height: var(--control-size-xs);
+        border-radius: var(--radius-pill);
+        background-color: transparent;
+        color: var(--text-secondary);
+        font-size: var(--font-size-xs);
+    }
+
+    .icon-button.row-actions-btn.is-danger:hover:not(:disabled),
+    .icon-button.row-actions-btn.is-danger:focus-visible {
+        background-color: var(--surface-focus);
+        color: var(--error-ink);
+    }
+}
+
+@media (hover: hover) {
+    @layer components {
+        .row-actions-host:hover > .row-actions,
+        .row-actions-host:focus-within > .row-actions {
+            opacity: 1;
+            pointer-events: auto;
+        }
+    }
 }
 
 .picker-card {
@@ -1765,48 +1835,6 @@ body.cloud-app .settings-cloud-note {
     font-weight: 500;
 }
 
-.theme-card-actions {
-    position: absolute;
-    top: var(--space-8);
-    left: var(--space-8);
-    display: flex;
-    gap: var(--space-4);
-    opacity: 0;
-    transform: translateY(-2px);
-    transition: opacity var(--transition-fast), transform var(--transition-fast);
-}
-
-.theme-card-custom:hover .theme-card-actions,
-.theme-card-custom:focus-within .theme-card-actions {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-.theme-card-action {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 24px;
-    height: 24px;
-    padding: 0;
-    background-color: color-mix(in srgb, var(--surface-color) 86%, transparent);
-    color: var(--text-color);
-    border-radius: var(--radius-pill);
-    cursor: pointer;
-    font-size: var(--font-size-2xs);
-    transition: background-color var(--transition-fast), color var(--transition-fast);
-}
-
-.theme-card-action:hover {
-    background-color: var(--primary-color);
-    color: var(--on-primary-color);
-}
-
-.theme-card-action.theme-card-delete:hover {
-    background-color: var(--error-color);
-    color: var(--on-error-color);
-}
-
 .theme-card-new {
     border: 2px dashed color-mix(in srgb, var(--text-secondary) 32%, transparent);
     background-color: transparent;
@@ -1852,15 +1880,21 @@ body.cloud-app .settings-cloud-note {
     min-width: 0;
 }
 
-.font-card-slot {
+.picker-card-slot {
     position: relative;
     display: flex;
     min-width: 0;
 }
 
-.font-card-slot > .font-card {
+.picker-card-slot > .picker-card {
     flex: 1;
     min-width: 0;
+}
+
+.picker-card-slot > .row-actions {
+    top: var(--space-8);
+    right: auto;
+    left: var(--space-8);
 }
 
 .font-card-preview {
@@ -1902,44 +1936,6 @@ body.cloud-app .settings-cloud-note {
     overflow-wrap: anywhere;
     font-size: var(--font-size-md);
     font-weight: 500;
-}
-
-.font-card-action {
-    position: absolute;
-    top: var(--space-8);
-    left: var(--space-8);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 26px;
-    height: 26px;
-    padding: 0;
-    color: var(--text-secondary);
-    background-color: color-mix(in srgb, var(--surface-color) 82%, transparent);
-    border-radius: var(--radius-pill);
-    cursor: pointer;
-    font-size: var(--font-size-2xs);
-    opacity: 0;
-    transform: translateY(-2px);
-    transition: opacity var(--transition-fast), transform var(--transition-fast), background-color var(--transition-fast), color var(--transition-fast);
-}
-
-.font-card-slot:hover .font-card-action,
-.font-card-slot:focus-within .font-card-action {
-    opacity: 1;
-    transform: translateY(0);
-}
-
-.font-card-action:hover {
-    background-color: var(--primary-color);
-    color: var(--on-primary-color);
-}
-
-.font-card-action:focus-visible {
-    opacity: 1;
-    transform: translateY(0);
-    outline: 2px solid var(--focus-color);
-    outline-offset: 2px;
 }
 
 .bg-card-preview {
@@ -1993,28 +1989,33 @@ body.cloud-app .settings-cloud-note {
     inset: 0;
     background-color: var(--background-color);
     background-image:
-        radial-gradient(at 22% 28%, var(--primary-tint-30) 0%, transparent 48%),
-        radial-gradient(at 78% 22%, color-mix(in srgb, var(--secondary-color) 24%, transparent) 0%, transparent 52%),
-        radial-gradient(at 60% 86%, var(--primary-tint-22) 0%, transparent 56%);
+        radial-gradient(circle at 38% 40%, color-mix(in srgb, var(--bg-accent-1) 36%, transparent), transparent 40%),
+        radial-gradient(circle at 64% 62%, color-mix(in srgb, var(--bg-accent-2) 30%, transparent), transparent 38%),
+        radial-gradient(circle at 63% 32%, color-mix(in srgb, var(--bg-accent-3) 30%, transparent), transparent 34%),
+        radial-gradient(circle at 34% 70%, color-mix(in srgb, var(--bg-accent-1) 24%, transparent), transparent 32%);
 }
 
 .bg-card-preview-aurora {
     position: absolute;
     inset: 0;
+    overflow: hidden;
     background-color: var(--background-color);
-    background-image: linear-gradient(120deg,
-        transparent 0%,
-        color-mix(in srgb, var(--primary-color) 28%, transparent) 32%,
-        color-mix(in srgb, var(--secondary-color) 26%, transparent) 58%,
-        transparent 100%);
-    background-size: 220% 220%;
-    animation: aurora-sweep 6s ease-in-out infinite;
 }
 
-@media (prefers-reduced-motion: reduce) {
-    .bg-card-preview-aurora {
-        animation: none;
-        background-position: 50% 50%;
+.bg-card-preview-aurora::before {
+    content: "";
+    position: absolute;
+    inset: -30%;
+    background-image:
+        radial-gradient(ellipse 46% 11% at 45% 44%, color-mix(in srgb, var(--bg-accent-1) 42%, transparent), transparent 70%),
+        radial-gradient(ellipse 36% 8% at 57% 57%, color-mix(in srgb, var(--bg-accent-2) 36%, transparent), transparent 70%),
+        radial-gradient(ellipse 40% 9% at 52% 50%, color-mix(in srgb, var(--bg-accent-3) 36%, transparent), transparent 70%);
+    transform: rotate(-12deg) translate3d(0, 0.5%, 0) scale(1.06, 1.1);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+    .bg-card-preview-aurora::before {
+        animation: app-bg-aurora-a 7s ease-in-out -3.5s infinite alternate;
     }
 }
 
@@ -2036,13 +2037,6 @@ body.cloud-app .settings-cloud-note {
     box-shadow: 0 0 0 0 var(--primary-tint-60);
     animation: pulseRing 1.6s ease-out infinite;
     pointer-events: none;
-}
-
-@media (max-width: 640px) {
-    .font-card-grid,
-    .bg-card-grid {
-        grid-template-columns: repeat(2, 1fr);
-    }
 }
 
 .theme-editor-content {
@@ -2083,6 +2077,8 @@ body.cloud-app .settings-cloud-note {
     overflow: hidden;
     background-color: var(--tc-bg);
     border-radius: var(--radius-md);
+    outline: 1px solid var(--border-strong);
+    outline-offset: -1px;
 }
 
 .theme-editor-contrast {
@@ -2121,22 +2117,89 @@ body.cloud-app .settings-cloud-note {
 }
 
 .theme-editor-contrast-sample-muted {
-    background-color: color-mix(in srgb, var(--tc-surface) 78%, color-mix(in srgb, var(--tc-text) 58%, var(--tc-bg)));
-    color: color-mix(in srgb, var(--tc-text) 58%, var(--tc-bg));
+    background-color: var(--tc-muted-fill, var(--surface-muted));
+    color: var(--tc-muted-text, var(--text-secondary));
 }
 
 .theme-editor-contrast-sample-accent {
     background-color: var(--tc-surface);
-    color: color-mix(in srgb, var(--tc-primary) 70%, var(--tc-text));
+    color: var(--tc-ink, var(--primary-ink));
 }
 
 .theme-editor-contrast-sample-primary {
     background-color: var(--tc-primary);
-    color: #fff;
+    color: var(--tc-on-primary, var(--on-primary-color));
+}
+
+.theme-editor-contrast-row .theme-editor-fix {
+    margin-left: auto;
+}
+
+.theme-editor-live {
+    justify-content: space-between;
+    font-size: var(--font-size-sm);
+    color: var(--text-color);
+}
+
+.theme-editor-more {
+    --disclosure-fill: color-mix(in srgb, var(--surface-muted) 50%, transparent);
+}
+
+.theme-editor-more-body {
+    --gap: var(--space-8);
+}
+
+.theme-editor-more-hint {
+    margin: 0;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+}
+
+.theme-editor-extra .theme-editor-swatch-label {
+    --gap: 0;
+    align-items: flex-start;
+    min-width: 0;
+}
+
+.theme-editor-extra-state {
+    font-size: var(--font-size-2xs);
+    color: var(--text-secondary);
+}
+
+.theme-editor-extra-controls {
+    --gap: var(--space-4);
+    flex: none;
+}
+
+.theme-editor-extra.is-auto .theme-editor-color {
+    opacity: 0.6;
+}
+
+.theme-editor-import .form-input {
+    flex: 1;
+    min-width: 0;
+}
+
+.theme-auto-pair {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: var(--space-12);
+}
+
+.theme-auto-pair-field {
+    --gap: var(--space-4);
+    min-width: 0;
+}
+
+.theme-auto-pair-label {
+    --gap: var(--space-6);
+    font-size: var(--font-size-sm);
+    color: var(--text-secondary);
 }
 
 .theme-editor-contrast-info {
     --gap: var(--space-2);
+    flex: 1;
     min-width: 0;
 }
 
@@ -2245,40 +2308,12 @@ body.cloud-app .settings-cloud-note {
     overflow: hidden;
 }
 
-.keybinds-category-header {
-    --gap: var(--space-10);
-    width: 100%;
-    padding: var(--space-12) var(--space-16);
-    background-color: transparent;
-    color: var(--text-color);
-    font-size: var(--font-size-md);
-    font-weight: 600;
-    cursor: pointer;
-    text-align: left;
-    transition: background-color var(--transition-fast);
-}
-
-.keybinds-category-header:hover {
-    background-color: var(--surface-focus);
-}
-
 .keybinds-category-header > i:first-child {
     width: 16px;
     text-align: center;
     color: var(--text-secondary);
     font-size: var(--font-size-sm);
     flex-shrink: 0;
-}
-
-.keybinds-chevron {
-    margin-left: auto;
-    font-size: var(--font-size-2xs);
-    color: var(--text-secondary);
-    transition: transform var(--transition-fast);
-}
-
-.keybinds-category-header[aria-expanded="false"] .keybinds-chevron {
-    transform: rotate(-90deg);
 }
 
 .keybinds-category-body {
@@ -2397,46 +2432,7 @@ body.cloud-app .settings-cloud-note {
 }
 
 .file-types-group {
-    background-color: var(--background-color);
-    border-radius: var(--radius-md);
-    overflow: hidden;
-}
-
-.file-types-group-summary {
-    --gap: var(--space-10);
-    width: 100%;
-    padding: var(--space-12) var(--space-14);
-    font-family: inherit;
-    font-size: var(--font-size-md);
-    font-weight: 600;
-    color: var(--text-color);
-    background: none;
-    border: none;
-    cursor: pointer;
-    text-align: left;
-    list-style: none;
-    user-select: none;
-    transition: background-color var(--transition-fast);
-}
-
-.file-types-group-summary::-webkit-details-marker {
-    display: none;
-}
-
-.file-types-group-summary:hover,
-.file-types-group-summary:focus-visible {
-    background-color: var(--surface-focus);
-}
-
-.file-types-group-chevron {
-    font-size: var(--font-size-2xs);
-    color: var(--text-secondary);
-    transition: transform var(--transition-fast);
-    margin-left: auto;
-}
-
-.file-types-group:not([open]) .file-types-group-chevron {
-    transform: rotate(-90deg);
+    --disclosure-fill: var(--background-color);
 }
 
 .file-types-group-label {
@@ -2492,16 +2488,6 @@ body.cloud-app .settings-cloud-note {
     background-color: var(--surface-muted);
     border-radius: var(--radius-2xs);
     overflow: hidden;
-}
-
-.guide-progress-bar {
-    height: 100%;
-    width: 100%;
-    background-color: var(--primary-color);
-    border-radius: var(--radius-2xs);
-    transform: scaleX(var(--progress, 0));
-    transform-origin: left;
-    transition: transform var(--transition-slow);
 }
 
 .guide-progress-text {
@@ -2589,22 +2575,6 @@ body.cloud-app .settings-cloud-note {
     overflow: hidden;
 }
 
-.guide-category-header {
-    --gap: var(--space-10);
-    width: 100%;
-    padding: var(--space-12) var(--space-14);
-    font-size: var(--font-size-md);
-    font-weight: 600;
-    color: var(--text-color);
-    background: none;
-    cursor: pointer;
-    text-align: left;
-}
-
-.guide-category-header:hover {
-    background-color: var(--surface-focus);
-}
-
 .guide-category-icon {
     width: 16px;
     text-align: center;
@@ -2628,24 +2598,6 @@ body.cloud-app .settings-cloud-note {
 
 .guide-category-progress-mini-bar {
     display: block;
-    height: 100%;
-    width: 100%;
-    background-color: var(--primary-color);
-    border-radius: var(--radius-2xs);
-    transform: scaleX(var(--progress, 0));
-    transform-origin: left;
-    transition: transform var(--transition-slow);
-}
-
-.guide-category-chevron {
-    font-size: var(--font-size-2xs);
-    color: var(--text-secondary);
-    transition: transform var(--transition-fast);
-    margin-left: auto;
-}
-
-.guide-category-header[aria-expanded="false"] .guide-category-chevron {
-    transform: rotate(-90deg);
 }
 
 .guide-category-body {

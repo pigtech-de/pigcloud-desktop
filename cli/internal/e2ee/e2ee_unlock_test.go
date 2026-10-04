@@ -116,11 +116,14 @@ func isolateKeyEnv(t *testing.T) {
 	os.Stdin = devnull
 
 	resetKeyCaches()
-	suppliedPassword = nil
+	defaultSession.supplied = nil
+	prevAgent := defaultSession.agent
+	defaultSession.agent = liveAgentSource{}
 
 	t.Cleanup(func() {
 		resetKeyCaches()
-		suppliedPassword = nil
+		defaultSession.supplied = nil
+		defaultSession.agent = prevAgent
 		os.Stdin = origStdin
 		devnull.Close()
 		config.SetConfigFile(origCfg)
@@ -129,12 +132,12 @@ func isolateKeyEnv(t *testing.T) {
 }
 
 func resetKeyCaches() {
-	cachedPub = nil
-	cachedPriv = nil
-	cachedNameKey = nil
-	cachedSigningPub = nil
-	cachedSigningPriv = nil
-	cachedTeeEnclaveKeySet = nil
+	defaultSession.pub = nil
+	defaultSession.priv = nil
+	defaultSession.nameKey = nil
+	defaultSession.signingPub = nil
+	defaultSession.signingPriv = nil
+	defaultSession.teeEnclaveKeySet = nil
 }
 
 func requireNonInteractiveStdin(t *testing.T) {
@@ -146,16 +149,16 @@ func requireNonInteractiveStdin(t *testing.T) {
 
 func assertNoKeyState(t *testing.T, where string) {
 	t.Helper()
-	if cachedPub != nil {
-		t.Errorf("%s: cachedPub populated after a failed unlock", where)
+	if defaultSession.pub != nil {
+		t.Errorf("%s: defaultSession.pub populated after a failed unlock", where)
 	}
-	if cachedPriv != nil {
-		t.Errorf("%s: cachedPriv populated after a failed unlock", where)
+	if defaultSession.priv != nil {
+		t.Errorf("%s: defaultSession.priv populated after a failed unlock", where)
 	}
-	if cachedNameKey != nil {
-		t.Errorf("%s: cachedNameKey populated after a failed unlock", where)
+	if defaultSession.nameKey != nil {
+		t.Errorf("%s: defaultSession.nameKey populated after a failed unlock", where)
 	}
-	if cachedSigningPub != nil || cachedSigningPriv != nil {
+	if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 		t.Errorf("%s: signing cache populated after a failed unlock", where)
 	}
 }
@@ -164,7 +167,7 @@ func TestGetKeyPairWithoutConfiguredKeysReturnsNoMaterial(t *testing.T) {
 	isolateKeyEnv(t)
 
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 
 	if pub != nil || priv != nil {
 		t.Fatalf("unconfigured account produced key material (pub set=%v, priv set=%v)", pub != nil, priv != nil)
@@ -202,7 +205,7 @@ func TestGetKeyPairRejectsMalformedPublicKey(t *testing.T) {
 			SetSuppliedPassword(append([]byte(nil), f.password...))
 
 			exits := 0
-			pub, priv := GetKeyPair(func() { exits++ })
+			pub, priv := getKeyPair(func() { exits++ })
 
 			if pub != nil || priv != nil {
 				t.Fatalf("malformed public key produced key material (pub set=%v, priv set=%v)", pub != nil, priv != nil)
@@ -210,7 +213,7 @@ func TestGetKeyPairRejectsMalformedPublicKey(t *testing.T) {
 			if exits == 0 {
 				t.Fatal("GetKeyPair never signalled failure to the caller")
 			}
-			if suppliedPassword == nil {
+			if defaultSession.supplied == nil {
 				t.Error("password was consumed before the public key was validated")
 			}
 			assertNoKeyState(t, tc.name)
@@ -226,7 +229,7 @@ func TestGetKeyPairWrongPasswordLeavesNoKeyMaterial(t *testing.T) {
 
 	SetSuppliedPassword([]byte("not the password"))
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 
 	if pub != nil || priv != nil {
 		t.Fatalf("wrong password produced key material (pub set=%v, priv set=%v)", pub != nil, priv != nil)
@@ -236,7 +239,7 @@ func TestGetKeyPairWrongPasswordLeavesNoKeyMaterial(t *testing.T) {
 	}
 	assertNoKeyState(t, "wrong password")
 
-	if nk := GetNameKey(func() {}); nk != nil {
+	if nk := getNameKey(func() {}); nk != nil {
 		t.Fatalf("GetNameKey returned %d bytes after a failed unlock", len(nk))
 	}
 }
@@ -296,7 +299,7 @@ func TestGetKeyPairRejectsCorruptWrappedKeys(t *testing.T) {
 
 			SetSuppliedPassword(append([]byte(nil), f.password...))
 			exits := 0
-			pub, priv := GetKeyPair(func() { exits++ })
+			pub, priv := getKeyPair(func() { exits++ })
 
 			if pub != nil || priv != nil {
 				t.Fatalf("corrupt key material produced key material (pub set=%v, priv set=%v)", pub != nil, priv != nil)
@@ -316,7 +319,7 @@ func TestGetKeyPairUnlocksAndCachesUsableKeys(t *testing.T) {
 
 	SetSuppliedPassword(append([]byte(nil), f.password...))
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 
 	if exits != 0 {
 		t.Fatalf("correct password still signalled failure %d time(s)", exits)
@@ -343,14 +346,14 @@ func TestGetKeyPairUnlocksAndCachesUsableKeys(t *testing.T) {
 		t.Error("unsealed plaintext differs from what was sealed")
 	}
 
-	if cachedSigningPub == nil || cachedSigningPriv == nil {
+	if defaultSession.signingPub == nil || defaultSession.signingPriv == nil {
 		t.Fatal("password unlock did not hydrate the signing key cache")
 	}
-	if cachedSigningPub.Ed25519 != f.signPub.Ed25519 {
+	if defaultSession.signingPub.Ed25519 != f.signPub.Ed25519 {
 		t.Error("hydrated signing public key does not match the configured one")
 	}
 
-	if suppliedPassword != nil {
+	if defaultSession.supplied != nil {
 		t.Error("supplied password was not consumed")
 	}
 }
@@ -363,7 +366,7 @@ func TestGetKeyPairDeviceWrappedWithoutKeychainNeverFallsBackToPassword(t *testi
 
 	SetSuppliedPassword(append([]byte(nil), f.password...))
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 
 	if pub != nil || priv != nil {
 		t.Fatalf("device-wrapped keys unlocked without the keychain (pub set=%v, priv set=%v)", pub != nil, priv != nil)
@@ -371,7 +374,7 @@ func TestGetKeyPairDeviceWrappedWithoutKeychainNeverFallsBackToPassword(t *testi
 	if exits == 0 {
 		t.Fatal("GetKeyPair never signalled failure to the caller")
 	}
-	if suppliedPassword == nil {
+	if defaultSession.supplied == nil {
 		t.Error("device-wrapped path consumed a password; it must fail closed instead")
 	}
 	assertNoKeyState(t, "device-wrapped without keychain")
@@ -417,6 +420,31 @@ func (f *keyFixture) agentMaterial() *agent.KeyMaterial {
 	}
 }
 
+type liveAgentSource struct{}
+
+func (liveAgentSource) Keys() *AgentKeys { return agentKeysFrom(agent.RequestKeys()) }
+
+func agentKeysFrom(km *agent.KeyMaterial) *AgentKeys {
+	if km == nil {
+		return nil
+	}
+	return &AgentKeys{
+		PublicKey:                km.PublicKey,
+		PrivateKey:               km.PrivateKey,
+		KyberPublicKey:           km.KyberPublicKey,
+		KyberSeed:                km.KyberSeed,
+		NameKey:                  km.NameKey,
+		SigningPublicKeyEd25519:  km.SigningPublicKeyEd25519,
+		SigningPrivateKeyEd25519: km.SigningPrivateKeyEd25519,
+		SigningPublicKeyMldsa:    km.SigningPublicKeyMldsa,
+		SigningPrivateKeyMldsa:   km.SigningPrivateKeyMldsa,
+	}
+}
+
+func hydrateSigningFromAgent(km *agent.KeyMaterial) {
+	defaultSession.hydrateSigningFromAgent(agentKeysFrom(km))
+}
+
 func TestGetKeyPairServedByAgentNeverPrompts(t *testing.T) {
 	isolateKeyEnv(t)
 	f := newKeyFixture(t)
@@ -425,7 +453,7 @@ func TestGetKeyPairServedByAgentNeverPrompts(t *testing.T) {
 
 	SetSuppliedPassword([]byte("this password must never be read"))
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 
 	if exits != 0 {
 		t.Fatalf("agent-served unlock signalled failure %d time(s)", exits)
@@ -433,19 +461,19 @@ func TestGetKeyPairServedByAgentNeverPrompts(t *testing.T) {
 	if pub == nil || priv == nil {
 		t.Fatal("running agent produced no key material")
 	}
-	if suppliedPassword == nil {
+	if defaultSession.supplied == nil {
 		t.Error("agent path consumed a password; the agent exists to avoid that")
 	}
 	if priv.X25519 != f.priv.X25519 || !bytes.Equal(priv.Kyber, f.priv.Kyber) {
 		t.Error("agent-served private key does not match the unlocked account")
 	}
-	if !bytes.Equal(cachedNameKey, f.nameKey) {
+	if !bytes.Equal(defaultSession.nameKey, f.nameKey) {
 		t.Error("agent-served name key does not match the account's derived name key")
 	}
-	if cachedSigningPub == nil || cachedSigningPriv == nil {
+	if defaultSession.signingPub == nil || defaultSession.signingPriv == nil {
 		t.Fatal("agent served signing keys but they were not cached")
 	}
-	if cachedSigningPub.Ed25519 != f.signPub.Ed25519 {
+	if defaultSession.signingPub.Ed25519 != f.signPub.Ed25519 {
 		t.Error("agent-served signing public key does not match the account's")
 	}
 }
@@ -462,10 +490,10 @@ func TestAgentServingShortNameKeyIsRefusedWholesale(t *testing.T) {
 	if EnsureKeysFromAgent() {
 		t.Fatal("agent material with a short name key was accepted")
 	}
-	if cachedNameKey != nil {
-		t.Errorf("a %d-byte name key reached the cache; path tokens would silently diverge", len(cachedNameKey))
+	if defaultSession.nameKey != nil {
+		t.Errorf("a %d-byte name key reached the cache; path tokens would silently diverge", len(defaultSession.nameKey))
 	}
-	if cachedPriv != nil || cachedPub != nil {
+	if defaultSession.priv != nil || defaultSession.pub != nil {
 		t.Error("encryption keys were cached from a payload that failed validation")
 	}
 }
@@ -479,14 +507,14 @@ func TestAgentServingFullNameKeyIsAccepted(t *testing.T) {
 	if !EnsureKeysFromAgent() {
 		t.Fatal("well-formed agent material was refused")
 	}
-	if len(cachedNameKey) != crypto.NameKeySize {
-		t.Fatalf("cached name key is %d bytes, want %d", len(cachedNameKey), crypto.NameKeySize)
+	if len(defaultSession.nameKey) != crypto.NameKeySize {
+		t.Fatalf("cached name key is %d bytes, want %d", len(defaultSession.nameKey), crypto.NameKeySize)
 	}
 	want, err := crypto.DeriveNameKey(f.priv)
 	if err != nil {
 		t.Fatalf("derive name key: %v", err)
 	}
-	if !bytes.Equal(cachedNameKey, want) {
+	if !bytes.Equal(defaultSession.nameKey, want) {
 		t.Error("cached name key is not the one derived from the account private key")
 	}
 }
@@ -503,12 +531,12 @@ func TestAgentServingPartialSigningKeysLeavesSigningLocked(t *testing.T) {
 	if !EnsureKeysFromAgent() {
 		t.Fatal("encryption keys should still be usable when only signing keys are malformed")
 	}
-	if cachedSigningPub != nil || cachedSigningPriv != nil {
+	if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 		t.Fatal("a partial signing key set was cached; signing would produce unverifiable output")
 	}
 
 	exits := 0
-	signPub, signPriv := GetSigningKeys(func() { exits++ })
+	signPub, signPriv := getSigningKeys(func() { exits++ })
 	if signPub != nil || signPriv != nil {
 		t.Fatal("GetSigningKeys handed back keys it never unlocked")
 	}
@@ -546,7 +574,7 @@ func TestExpiredAgentFileFallsBackInsteadOfServingEmptyKeys(t *testing.T) {
 	assertNoKeyState(t, "expired agent")
 
 	exits := 0
-	pub, priv := GetKeyPair(func() { exits++ })
+	pub, priv := getKeyPair(func() { exits++ })
 	if pub != nil || priv != nil {
 		t.Fatalf("expired agent path produced key material (pub set=%v, priv set=%v)", pub != nil, priv != nil)
 	}
@@ -584,7 +612,7 @@ func TestUnreachableAgentFallsBackInsteadOfServingEmptyKeys(t *testing.T) {
 	assertNoKeyState(t, "unreachable agent")
 
 	SetSuppliedPassword(append([]byte(nil), f.password...))
-	pub, priv := GetKeyPair(func() { t.Error("password fallback signalled failure") })
+	pub, priv := getKeyPair(func() { t.Error("password fallback signalled failure") })
 	if pub == nil || priv == nil {
 		t.Fatal("password fallback produced no key material after an unreachable agent")
 	}
@@ -600,15 +628,15 @@ func TestHydrateSigningFromAgentRequiresAllFourKeys(t *testing.T) {
 
 	resetKeyCaches()
 	hydrateSigningFromAgent(f.agentMaterial())
-	if cachedSigningPub == nil || cachedSigningPriv == nil {
+	if defaultSession.signingPub == nil || defaultSession.signingPriv == nil {
 		t.Fatal("a complete signing key set was not cached")
 	}
 	payload := randKey(t, 512)
-	sigEd, sigMl, err := crypto.SignFileBytes(bytes.NewReader(payload), cachedSigningPriv)
+	sigEd, sigMl, err := crypto.SignFileBytes(bytes.NewReader(payload), defaultSession.signingPriv)
 	if err != nil {
 		t.Fatalf("sign with cached key: %v", err)
 	}
-	if err := crypto.VerifyFileSignatures(bytes.NewReader(payload), sigEd, sigMl, cachedSigningPub); err != nil {
+	if err := crypto.VerifyFileSignatures(bytes.NewReader(payload), sigEd, sigMl, defaultSession.signingPub); err != nil {
 		t.Fatalf("cached signing pair does not verify its own signature: %v", err)
 	}
 
@@ -638,7 +666,7 @@ func TestHydrateSigningFromAgentRequiresAllFourKeys(t *testing.T) {
 			km := f.agentMaterial()
 			tc.damage(km)
 			hydrateSigningFromAgent(km)
-			if cachedSigningPub != nil || cachedSigningPriv != nil {
+			if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 				t.Fatal("partial signing material was cached; signing would emit unverifiable output")
 			}
 		})
@@ -647,7 +675,7 @@ func TestHydrateSigningFromAgentRequiresAllFourKeys(t *testing.T) {
 	t.Run("nil material", func(t *testing.T) {
 		resetKeyCaches()
 		hydrateSigningFromAgent(nil)
-		if cachedSigningPub != nil || cachedSigningPriv != nil {
+		if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 			t.Fatal("nil agent material populated the signing cache")
 		}
 	})
@@ -693,9 +721,9 @@ func TestHydrateSigningFromConfigRejectsWrongPDKAndMalformedFields(t *testing.T)
 			}
 
 			resetKeyCaches()
-			hydrateSigningFromConfigWithPDK(config.Get(), pdk)
+			defaultSession.hydrateSigningFromConfigWithPDK(config.Get(), pdk)
 
-			if cachedSigningPub != nil || cachedSigningPriv != nil {
+			if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 				t.Fatal("signing keys were cached from material that should not unwrap")
 			}
 		})
@@ -709,7 +737,7 @@ func TestGetSigningKeysRefusesWhenConfigHasNone(t *testing.T) {
 
 	SetSuppliedPassword(append([]byte(nil), f.password...))
 	exits := 0
-	signPub, signPriv := GetSigningKeys(func() { exits++ })
+	signPub, signPriv := getSigningKeys(func() { exits++ })
 
 	if signPub != nil || signPriv != nil {
 		t.Fatal("GetSigningKeys returned keys for an account that has none")
@@ -717,9 +745,7 @@ func TestGetSigningKeysRefusesWhenConfigHasNone(t *testing.T) {
 	if exits == 0 {
 		t.Fatal("GetSigningKeys never signalled failure to the caller")
 	}
-	if pub, priv := GetSigningKeysIfAvailable(func() {
-		t.Error("GetSigningKeysIfAvailable signalled failure for a legitimately keyless account")
-	}); pub != nil || priv != nil {
+	if pub, priv := GetSigningKeysIfAvailable(); pub != nil || priv != nil {
 		t.Fatal("GetSigningKeysIfAvailable invented keys")
 	}
 }
@@ -730,23 +756,23 @@ func TestClearCachedKeyZeroesSecretsAndDropsCaches(t *testing.T) {
 	f.install(t)
 
 	SetSuppliedPassword(append([]byte(nil), f.password...))
-	if _, priv := GetKeyPair(func() { t.Fatal("unlock failed") }); priv == nil {
+	if _, priv := getKeyPair(func() { t.Fatal("unlock failed") }); priv == nil {
 		t.Fatal("unlock produced no key material")
 	}
-	if GetNameKey(func() { t.Fatal("name key derivation failed") }) == nil {
+	if getNameKey(func() { t.Fatal("name key derivation failed") }) == nil {
 		t.Fatal("no name key after unlock")
 	}
 
-	kyberSeed := cachedPriv.Kyber
-	nameKey := cachedNameKey
-	mldsaSK := cachedSigningPriv.Mldsa
+	kyberSeed := defaultSession.priv.Kyber
+	nameKey := defaultSession.nameKey
+	mldsaSK := defaultSession.signingPriv.Mldsa
 
 	ClearCachedKey()
 
-	if cachedPub != nil || cachedPriv != nil || cachedNameKey != nil {
+	if defaultSession.pub != nil || defaultSession.priv != nil || defaultSession.nameKey != nil {
 		t.Error("ClearCachedKey left encryption state behind")
 	}
-	if cachedSigningPub != nil || cachedSigningPriv != nil {
+	if defaultSession.signingPub != nil || defaultSession.signingPriv != nil {
 		t.Error("ClearCachedKey left signing state behind")
 	}
 	for _, buf := range []struct {

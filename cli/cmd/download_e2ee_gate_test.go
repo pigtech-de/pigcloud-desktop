@@ -35,8 +35,6 @@ var e2eeGateRoots = []string{
 }
 
 var e2eeAllowedReads = map[string]string{
-	"api.AsDownloadResult":          "CatPayload to DownloadResult field copy, before any guard runs",
-	"api.parseDownloadMetadata":     "the wire parse itself, which is where the flag enters the process",
 	"e2ee.RequireEncryptedDownload": "the one refusal every caller must reach",
 }
 

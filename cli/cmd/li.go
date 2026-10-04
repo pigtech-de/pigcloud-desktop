@@ -8,12 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/signal"
 	"strings"
 	"syscall"
 	"time"
 
 	"pigcloud/internal/api"
+	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/config"
 	"pigcloud/internal/crypto"
 	"pigcloud/internal/e2ee"
@@ -81,7 +81,7 @@ func runLogin(apiKey string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	if apiKey == "" {
@@ -111,7 +111,7 @@ func runDeviceLogin(ctx context.Context) {
 	commitment := sha256.Sum256(ephPubBytes)
 
 	client := api.NewClient()
-	authResp, err := client.DeviceAuthorize(ctx, deviceLabel(), base64.StdEncoding.EncodeToString(ephPubBytes))
+	authResp, err := client.DeviceAuthorize(ctx, deviceLabel(), base64.StdEncoding.EncodeToString(ephPubBytes), false)
 	if err != nil {
 		output.PrintError("Could not start device login: " + err.Error())
 		os.Exit(1)
@@ -270,7 +270,7 @@ func finishLogin(ctx context.Context, apiKey, sealedB64 string, ephPriv *crypto.
 	setupE2EEKeys(ctx, client)
 
 	if config.HasEncryptionKeys() && term.IsTerminal(int(syscall.Stdin)) {
-		pub, priv := e2ee.GetKeyPair(func() {})
+		pub, priv := cmdutil.GetKeyPair(func() {})
 		if pub != nil && priv != nil {
 			DeriveAndStartAgent(pub, priv)
 			output.PrintSuccess("Keys unlocked (expires in 1 hour)")
@@ -293,27 +293,6 @@ func printPostLoginNextSteps() {
 	fmt.Println("  " + cmdStyle("pc ul <file> /") + "         Upload a file")
 	fmt.Println("  " + cmdStyle("pc hl") + "                  Browse all commands")
 	fmt.Println()
-}
-
-func buildKeyBundleSig(pub *crypto.PublicKeySet, signPub *crypto.SigningPublicKeySet, signPriv *crypto.SigningPrivateKeySet) (string, error) {
-	sigEd, sigMl, err := crypto.SignKeyBundle(&crypto.KeyBundle{
-		X25519:  pub.X25519[:],
-		Kyber:   pub.Kyber,
-		Ed25519: signPub.Ed25519[:],
-		Mldsa:   signPub.Mldsa,
-	}, signPriv)
-	if err != nil {
-		return "", err
-	}
-	blob, err := json.Marshal(map[string]any{
-		"v":      1,
-		"sig_ed": base64.StdEncoding.EncodeToString(sigEd),
-		"sig_ml": base64.StdEncoding.EncodeToString(sigMl),
-	})
-	if err != nil {
-		return "", err
-	}
-	return base64.StdEncoding.EncodeToString(blob), nil
 }
 
 func setupE2EEKeys(ctx context.Context, client *api.Client) {
@@ -392,87 +371,14 @@ func setupE2EEKeys(ctx context.Context, client *api.Client) {
 		os.Exit(1)
 	}
 
-	pub, priv, err := crypto.GenerateHybridKeyPair()
+	keys, err := e2ee.NewAccountKeys(pw1)
 	if err != nil {
-		output.PrintError("Failed to generate key pair: " + err.Error())
+		output.PrintError("Failed to set up encryption keys: " + err.Error())
 		os.Exit(1)
 	}
+	pub, enc, signPub, signEnc := keys.Public, keys.Wrapped, keys.SigningPublic, keys.SigningWrapped
 
-	enc, err := crypto.EncryptHybridPrivateKey(priv, pw1)
-	if err != nil {
-		output.PrintError("Failed to encrypt private key: " + err.Error())
-		os.Exit(1)
-	}
-
-	recoveryKey, err := crypto.GenerateRecoveryKey()
-	if err != nil {
-		output.PrintError("Failed to generate recovery key: " + err.Error())
-		os.Exit(1)
-	}
-
-	recovered, err := crypto.EncryptHybridPrivateKeyWithKey(priv, recoveryKey)
-	if err != nil {
-		output.PrintError("Failed to wrap recovery key: " + err.Error())
-		os.Exit(1)
-	}
-
-	signPub, signPriv, err := crypto.GenerateSigningKeyPair()
-	if err != nil {
-		output.PrintError("Failed to generate signing key pair: " + err.Error())
-		os.Exit(1)
-	}
-	pdk := crypto.DeriveKey(pw1, enc.Salt, enc.OpsLimit, enc.MemLimit)
-	signEnc, err := crypto.EncryptSigningPrivateKeys(signPriv, pdk)
-	if err != nil {
-		for i := range pdk {
-			pdk[i] = 0
-		}
-		output.PrintError("Failed to wrap signing private keys: " + err.Error())
-		os.Exit(1)
-	}
-	signRecovered, err := crypto.EncryptSigningPrivateKeysWithKey(signPriv, recoveryKey)
-	for i := range pdk {
-		pdk[i] = 0
-	}
-	if err != nil {
-		output.PrintError("Failed to recovery-wrap signing keys: " + err.Error())
-		os.Exit(1)
-	}
-
-	params := map[string]string{
-		"public_key":                           base64.StdEncoding.EncodeToString(pub.X25519[:]),
-		"encrypted_private_key":                base64.StdEncoding.EncodeToString(enc.X25519Ciphertext),
-		"private_key_nonce":                    base64.StdEncoding.EncodeToString(enc.X25519Nonce),
-		"public_key_kyber":                     base64.StdEncoding.EncodeToString(pub.Kyber),
-		"encrypted_private_key_kyber":          base64.StdEncoding.EncodeToString(enc.KyberCiphertext),
-		"private_key_kyber_nonce":              base64.StdEncoding.EncodeToString(enc.KyberNonce),
-		"kdf_salt":                             base64.StdEncoding.EncodeToString(enc.Salt),
-		"kdf_ops_limit":                        fmt.Sprintf("%d", enc.OpsLimit),
-		"kdf_mem_limit":                        fmt.Sprintf("%d", enc.MemLimit),
-		"recovery_encrypted_key":               base64.StdEncoding.EncodeToString(recovered.X25519Ciphertext),
-		"recovery_key_nonce":                   base64.StdEncoding.EncodeToString(recovered.X25519Nonce),
-		"recovery_private_key_kyber_encrypted": base64.StdEncoding.EncodeToString(recovered.KyberCiphertext),
-		"recovery_private_key_kyber_nonce":     base64.StdEncoding.EncodeToString(recovered.KyberNonce),
-		"signing_public_key_ed25519":                     base64.StdEncoding.EncodeToString(signPub.Ed25519[:]),
-		"encrypted_signing_private_key_ed25519":          base64.StdEncoding.EncodeToString(signEnc.Ed25519Ciphertext),
-		"signing_private_key_ed25519_nonce":              base64.StdEncoding.EncodeToString(signEnc.Ed25519Nonce),
-		"signing_public_key_mldsa":                       base64.StdEncoding.EncodeToString(signPub.Mldsa),
-		"encrypted_signing_private_key_mldsa":            base64.StdEncoding.EncodeToString(signEnc.MldsaCiphertext),
-		"signing_private_key_mldsa_nonce":                base64.StdEncoding.EncodeToString(signEnc.MldsaNonce),
-		"recovery_signing_private_key_ed25519_encrypted": base64.StdEncoding.EncodeToString(signRecovered.Ed25519Ciphertext),
-		"recovery_signing_private_key_ed25519_nonce":     base64.StdEncoding.EncodeToString(signRecovered.Ed25519Nonce),
-		"recovery_signing_private_key_mldsa_encrypted":   base64.StdEncoding.EncodeToString(signRecovered.MldsaCiphertext),
-		"recovery_signing_private_key_mldsa_nonce":       base64.StdEncoding.EncodeToString(signRecovered.MldsaNonce),
-	}
-
-	if sig, err := buildKeyBundleSig(pub, signPub, signPriv); err == nil {
-		params["key_bundle_sig"] = sig
-	} else {
-		output.PrintError("Failed to sign the published key bundle: " + err.Error())
-		os.Exit(1)
-	}
-
-	setupResp, err := client.SetupEncryptionKeys(ctx, params)
+	setupResp, err := client.SetupEncryptionKeys(ctx, keys.Params)
 	if err != nil {
 		output.PrintError("Failed to store encryption keys: " + err.Error())
 		os.Exit(1)
@@ -511,7 +417,7 @@ func setupE2EEKeys(ctx context.Context, client *api.Client) {
 	fmt.Println()
 	output.PrintWarning("SAVE YOUR RECOVERY KEY — if you lose your password, this is the only way to recover:")
 	fmt.Println()
-	fmt.Println("  " + crypto.FormatRecoveryKey(recoveryKey))
+	fmt.Println("  " + crypto.FormatRecoveryKey(keys.RecoveryKey))
 	fmt.Println()
 	output.PrintWarning("Write it down and store it in a safe place. It will NOT be shown again.")
 }

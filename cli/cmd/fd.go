@@ -14,16 +14,13 @@ import (
 )
 
 var (
-	findType        string
-	findLimit       int
-	findAll         bool
-	findRegex       bool
-	findFixed       bool
-	findIgnoreCase  bool
-	findLargerThan  string
-	findSmallerThan string
-	findNewerThan   string
-	findOlderThan   string
+	findType       string
+	findLimit      int
+	findAll        bool
+	findRegex      bool
+	findFixed      bool
+	findIgnoreCase bool
+	findFilters    sizeDateFilters
 )
 
 var findCmd = &cobra.Command{
@@ -68,10 +65,7 @@ func init() {
 	findCmd.Flags().BoolVarP(&findRegex, "regex", "E", false, "treat pattern as regular expression")
 	findCmd.Flags().BoolVarP(&findFixed, "fixed", "F", false, "treat pattern as literal substring")
 	findCmd.Flags().BoolVarP(&findIgnoreCase, "ignore-case", "i", false, "case-insensitive matching")
-	findCmd.Flags().StringVar(&findLargerThan, "larger-than", "", "only files larger than SIZE (e.g. 500K, 100M, 2G)")
-	findCmd.Flags().StringVar(&findSmallerThan, "smaller-than", "", "only files smaller than SIZE")
-	findCmd.Flags().StringVar(&findNewerThan, "newer-than", "", "only items modified on or after DATE (YYYY-MM-DD)")
-	findCmd.Flags().StringVar(&findOlderThan, "older-than", "", "only items modified before DATE (YYYY-MM-DD)")
+	findFilters.register(findCmd)
 	findCmd.MarkFlagsMutuallyExclusive("regex", "fixed")
 }
 
@@ -91,23 +85,16 @@ func runFind(pattern, searchPath string) {
 	if findAll {
 		options["all"] = "true"
 	}
-	for opt, val := range map[string]string{
-		"larger-than": findLargerThan, "smaller-than": findSmallerThan,
-		"newer-than": findNewerThan, "older-than": findOlderThan,
-	} {
-		if val != "" {
-			options[opt] = val
-		}
-	}
+	findFilters.apply(options)
 
 	if e2ee.HasE2EEKeys() {
-		e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 		addRecursiveListingScope(ctx, options, resolvedPath, findAll)
 	}
 
 	_, payload := cmdutil.ExecuteCommand[api.FindPayload](ctx, "fd", options, ExitWithError)
 
-	if !e2ee.EnsureNamesReadable() {
+	if !cmdutil.EnsureNamesReadable() {
 		return
 	}
 
@@ -115,9 +102,7 @@ func runFind(pattern, searchPath string) {
 	parentByID := make(map[string]string, len(payload.Results))
 	for i := range payload.Results {
 		entry := &payload.Results[i]
-		if entry.E2EEDisplayName != "" {
-			entry.Name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-		}
+		entry.Name = e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
 		if entry.ID != "" {
 			nameByID[entry.ID] = entry.Name
 			parentByID[entry.ID] = entry.ParentID
@@ -168,7 +153,7 @@ func runFind(pattern, searchPath string) {
 
 	filtered := payload.Results[:0]
 	for _, entry := range payload.Results {
-		if entry.Filtered || entry.Name == "(encrypted)" {
+		if entry.Filtered || entry.Name == e2ee.NameUnavailable {
 			continue
 		}
 		if findType == "f" && entry.Type == "directory" {

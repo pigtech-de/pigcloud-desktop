@@ -1,10 +1,7 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
-	"os"
-	"os/signal"
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
@@ -85,9 +82,7 @@ func runTrashList() {
 
 	for i := range payload.Items {
 		item := &payload.Items[i]
-		if item.E2EEDisplayName != "" {
-			item.Name = e2ee.DecryptE2EEName(item.E2EEDisplayName)
-		}
+		item.Name = e2ee.ResolveName(item.E2EEDisplayName, item.Name)
 		if item.Type == "" && item.ItemType != "" {
 			item.Type = item.ItemType
 		}
@@ -112,7 +107,7 @@ func runEmptyTrash() {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	_, payload := cmdutil.ExecuteCommand[api.EmptyTrashPayload](ctx, "et", map[string]string{}, ExitWithError)

@@ -1,0 +1,117 @@
+{
+  "vector_kind": "name_token_v1",
+  "spec_version": 1,
+  "name_key_context": "pigcloud-e2ee-name-key-v2",
+  "description": "Name-key derivation (BLAKE2b-256 keyed by context over x25519_sk || mlkem_seed) + path-token derivation (BLAKE2b-256 keyed by name key over the normalized path). Each impl must reproduce name_key_hex and every case token_hex. Cases whose canonical and pre-convergence (simple lowercase) normalizers disagree (XLANG-CR-04: U+0130, word-final U+03A3) also carry legacy_token_hex, the token an older client sends as path_tokens_legacy; every impl must reproduce it and produce nothing for unaffected paths.",
+  "generator": {
+    "impl": "go",
+    "package": "pigcloud/internal/crypto",
+    "function": "DeriveNameKey/ComputePathToken",
+    "tool": "cli/internal/crypto/genvec_test.go (PIGCLOUD_GEN_VECTORS=1 go test -run TestGenerateNameTokenVector)",
+    "generated_at": "2026-07-18T11:25:33Z"
+  },
+  "private_key": {
+    "x25519_sk_b64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=",
+    "mlkem_seed_b64": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaXmJmam5ydnp+goaKjpKWmp6ipqqusra6vsLGys7S1tre4ubq7vL2+vw=="
+  },
+  "name_key_hex": "19d7a2291f7307da48a5623099990671168bee8c7f96d10dbace16743583efc3",
+  "cases": [
+    {
+      "path": "Documents/Report.PDF",
+      "token_hex": "092fa6ce5a3508882ed66e4f4445e1c8c379def5cd887b80761f62e4d39c95ff"
+    },
+    {
+      "path": "photos/Urlaub 2025/Straße.jpg",
+      "token_hex": "63f36ee3b582440a8383893480c06176d0a08c61ab054032db1cd4ffc244be05"
+    },
+    {
+      "path": "GROSS/WEISS.TXT",
+      "token_hex": "17f66dfa29bba7d23d9fbae193077ec39d1c310ea8ef17fdcac967ddc408f32b"
+    },
+    {
+      "path": "münchen/Ärger.txt",
+      "token_hex": "4bea24fbd3def719da2610c983c242806000a6497c94fde30991495ae36650c9"
+    },
+    {
+      "path": "café/résumé.doc",
+      "token_hex": "463cb68c5cc072351be7c1803573937c598c703be5b2e3d9dbc5699116197317"
+    },
+    {
+      "path": "café/résumé.doc",
+      "token_hex": "463cb68c5cc072351be7c1803573937c598c703be5b2e3d9dbc5699116197317"
+    },
+    {
+      "path": "🐷 pig/📁 files",
+      "token_hex": "d4913289761d78d3531be89e5cc2c674ae9f49b8cb30b03759cf3426a5e295a0"
+    },
+    {
+      "path": "\\windows\\Style\\Path.txt",
+      "token_hex": "5043d6acc902b87365397ed13a84a1334a80bb1fcfd5481230a17cff9cf499c2"
+    },
+    {
+      "path": "//double//slash/",
+      "token_hex": "6c8918d48da7245dcc43ef5485fbc13f789b22dd6eadc8e2a71658b9658b1bd7"
+    },
+    {
+      "path": "/leading/trailing/",
+      "token_hex": "8ba7bca726b84900eb43be0809956c2c49fb19a94bc1a86463be4bb66b5a38a6"
+    },
+    {
+      "path": "İstanbul/dosya.txt",
+      "token_hex": "1a3a6462916fddce34bc36809be5010e1d468e1c073a8de38da6d7d1605238c7",
+      "legacy_token_hex": "9b87e12f5eb568372db32b3cb493bbb3bd7a9d98a2048bffe9cc8fd45efc92c5"
+    },
+    {
+      "path": "Diyarbakır/İZMİR.txt",
+      "token_hex": "32eaea124c623fb8e719144575d116228b2c4382287330d1a686a755194701ef",
+      "legacy_token_hex": "becd9ca378fefab7bf7fe9cb52d0568cc32ee3215b1a4fbc3378ed2ce4d93bde"
+    },
+    {
+      "path": "ΟΔΥΣΣΕΑΣ/ΣΟΦΟΣ.txt",
+      "token_hex": "363ed4ba6c299e212c7e1626aae32f02e046e45c0b51e1c1bc6d3196a2c8cfa7",
+      "legacy_token_hex": "bf18b91f0eb9a73b763e7f2f8811ca79f5c55df83fcd2722809c2dc01c30e649"
+    },
+    {
+      "path": "Σ ΣΣ Σ.txt",
+      "token_hex": "bc4c1ff03e7c87eca306f0a6413d2a23162d426391e209f30c091e4c33e8357f",
+      "legacy_token_hex": "783a75be13d6546c9e706220e03586993c64d817febf3b95fad2dcc8a628def3"
+    },
+    {
+      "path": "ΕΛΛΑΣ.txt",
+      "token_hex": "3669cc0036465db34944a6e4981a5b5cfb76eb51354fc7a222f4fbc309f9c2f0"
+    },
+    {
+      "path": "ΜΆΪΟΣ/Δ.doc",
+      "token_hex": "cacc4049e2f81c100300b9d959341076f41acd4acde00fd5a9f8a18f2eae8ced",
+      "legacy_token_hex": "a92d9097353e90b11c877cdb57be2917824905989a83c34b2e57a19f53943d02"
+    },
+    {
+      "path": "ıstanbul/dosya.txt",
+      "token_hex": "f0139892d5d36ea68279cb3be23c0e19a71c463be27bb4803facecfd1ff21573"
+    },
+    {
+      "path": "Σοφός/Σ.txt",
+      "token_hex": "9eb9fdea36f7c2f9b30a46bb03cbf1ab02e741deaa4a492d29c647e21dc8dc24"
+    },
+    {
+      "path": "ẞ/scharfes.txt",
+      "token_hex": "b10f3f71ffd67c50bdcbbaff33346b83c01d76bfd580435098948107f9bf66ec"
+    },
+    {
+      "path": "K/kelvin.txt",
+      "token_hex": "d5077f2c325b26465f56346a3f82a3beafeae3ca4091939121085c1acf0845e1"
+    },
+    {
+      "path": "АБВ/ГД.txt",
+      "token_hex": "5b352c226e2ea218d1b41f901cbd21c7c2ed85f7c86f7e832bc169d857018578"
+    },
+    {
+      "path": "Ǆjur/file.txt",
+      "token_hex": "3497f4e6dd4b4919d26a06ed124c809e240bdf8e467befad805fae7d1e4cf598"
+    },
+    {
+      "path": "äpfel/ÄPFEL.txt",
+      "token_hex": "cb5613cde32fb9913d7f58dd34ac6c4e95229c2e5e7a647a41e6eb1a93a3ac2f"
+    }
+  ]
+}

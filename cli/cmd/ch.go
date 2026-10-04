@@ -189,7 +189,7 @@ func runChatHistory(username string) {
 		}
 	}
 	if needsKeys {
-		_, privKey = e2ee.GetKeyPair(ExitWithError)
+		_, privKey = cmdutil.GetKeyPair(ExitWithError)
 	}
 
 	for _, msg := range payload.Messages {
@@ -201,6 +201,11 @@ func runChatHistory(username string) {
 			sender = color.CyanString("you")
 		} else {
 			sender = color.GreenString(username)
+		}
+
+		if msg.SenderBlocked {
+			fmt.Printf("  %s %s  %s\n", color.HiBlackString("#%d", msg.ID), sender, color.HiBlackString("[message from a blocked user]"))
+			continue
 		}
 
 		if msg.Blocked {
@@ -271,16 +276,16 @@ func runChatShareFile(username, filePath string) {
 	options["username"] = username
 	options["source"] = resolvedPath
 
+	var keys []api.SealedKeyEntry
 	if e2ee.HasE2EEKeys() {
-		sealedKeys, _ := resealKeysAndNamesForRecipient(ctx, resolvedPath, username)
-		if sealedKeys != "" {
-			options["sealed_keys"] = sealedKeys
-		}
+		keys, _ = resealKeysAndNamesForRecipient(ctx, resolvedPath, username)
+		setFirstShareBatch(options, "sealed_keys", keys)
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.ChatSendPayload](ctx, "ch", options, ExitWithError)
+	storeShareOverflow(ctx, username, "", keys, nil)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
@@ -336,7 +341,7 @@ func runChatUnread() {
 }
 
 func encryptChatMessage(ctx context.Context, recipientUsername, plaintext string) map[string]string {
-	pubKey, _ := e2ee.GetKeyPair(ExitWithError)
+	pubKey, _ := cmdutil.GetKeyPair(ExitWithError)
 
 	client := api.NewClient()
 	pubkeyResp, err := client.FetchPublicKey(ctx, recipientUsername)

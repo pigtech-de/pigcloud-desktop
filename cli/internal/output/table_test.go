@@ -90,9 +90,9 @@ func TestQuietMode(t *testing.T) {
 	SetQuiet(true)
 	defer SetQuiet(false)
 
-	bar := NewProgressBar(100, "test")
-	bar.Set64(50)
-	bar.Finish()
+	if !IsQuiet() {
+		t.Error("SetQuiet(true) did not take effect")
+	}
 }
 
 func ptr(v int64) *int64      { return &v }

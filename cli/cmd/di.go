@@ -71,7 +71,7 @@ func runDiff(filePath, versionA, versionB string) {
 	resolvedPath := cmdutil.ResolvePath(filePath)
 
 	pathOpts := map[string]string{}
-	e2ee.AddPathTokensFor(pathOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(pathOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	displayA, displayB := versionA, versionB
 	if versionA != "" || versionB != "" {

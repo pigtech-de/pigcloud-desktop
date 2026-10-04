@@ -3,6 +3,7 @@
 
     window.PigcloudConstants = Object.freeze({
         EVT: Object.freeze({
+            ACCOUNT_EXPORT_REQUEST: 'pigcloud:account-export-request',
             ASSISTANT_COMMANDS_CHANGED: 'pigcloud:assistant-commands-changed',
             ASSISTANT_CONSENT_CHANGED: 'pigcloud:assistant-consent-changed',
             ASSISTANT_PREFERENCE: 'pigcloud:assistant-preference',
@@ -23,6 +24,7 @@
             GUIDE_SHARE_TOUR: 'pigcloud:guide-share-tour',
             GUIDE_STEP: 'pigcloud:guide-step',
             ICON_PREFS_CHANGE: 'pigcloud:icon-prefs-change',
+            APP_ICON_CHANGE: 'pigcloud:app-icon-change',
             LANDING_RESET: 'pigcloud:landing-reset',
             LANGUAGE_CHANGE: 'pigcloud:language-change',
             NAVIGATE_LOGICAL: 'pigcloud:navigate-logical',
@@ -35,12 +37,14 @@
             SETTINGS_DUPLICATE_UPLOADS: 'pigcloud:settings-duplicate-uploads',
             SETTINGS_SECTION_SHOWN: 'pigcloud:settings-section-shown',
             STORAGE_UPDATE: 'pigcloud:storage-update',
+            THEME_APPLIED: 'pigcloud:theme-applied',
             THEME_DELETE: 'pigcloud:theme-delete',
             THEME_EDIT: 'pigcloud:theme-edit',
             THEME_SAVE: 'pigcloud:theme-save',
             TOGGLE_CHAT_MODAL: 'pigcloud:toggle-chat-modal',
         }),
         LS: Object.freeze({
+            AUDIO_RESUME: 'pigcloud_audio_resume',
             TEE_ENCLAVE_PK: 'pigcloud_tee_enclave_pk',
             TEE_MRENCLAVE: 'pigcloud_tee_mrenclave',
             TEE_ATTESTATION_MODE: 'pigcloud_tee_attestation_mode',
@@ -59,6 +63,7 @@
             SIDEBAR_TREE_EXPANDED: 'pigcloud_sidebar_tree_expanded',
             SIDEBAR_WIDTH: 'pigcloud_sidebar_width',
             LOGIN_DEST_HASH: 'pigcloud_login_dest_hash',
+            APP_LOCK_LOCKED: 'pigcloud_app_lock_locked',
             CHAT_LAST_CONTACT: 'pigcloud_chat_last_contact',
             THUMB_MISSING: 'pigcloud_thumb_missing',
             E2EE_BLOB_PREFIX: 'pigcloud_e2ee_priv_',

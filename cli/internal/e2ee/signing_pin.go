@@ -38,21 +38,76 @@ func deriveSigningPubs(priv *crypto.SigningPrivateKeySet) (edPub []byte, mldsaPu
 	return edPub, mldsaPub
 }
 
-func resolveOwnSigningPubsInteractive() ([]byte, []byte) {
-	if cachedSigningPriv == nil {
-		GetSigningKeysIfAvailable(func() {})
+func (s *Session) resolveOwnSigningPubs() ([]byte, []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.resolveOwnSigningPubsLocked()
+}
+
+func (s *Session) resolveOwnSigningPubsLocked() ([]byte, []byte) {
+	if s.signingPriv == nil {
+		s.signingKeysIfAvailableLocked()
 	}
-	return deriveSigningPubs(cachedSigningPriv)
+	return deriveSigningPubs(s.signingPriv)
 }
 
 const ownSigningPksMax = 16
 
-func signingPksPath() string {
+const ownSigningPinVersion = 2
+
+var ownSigningPins = ownerSidecar[[]string]{name: "signing_pks.json", version: ownSigningPinVersion}
+
+type ownerSidecar[T any] struct {
+	name    string
+	version int
+}
+
+type sidecarFile[T any] struct {
+	V      int          `json:"v"`
+	Owners map[string]T `json:"owners"`
+}
+
+func (s ownerSidecar[T]) path() string {
 	dir := config.Dir()
 	if dir == "" {
 		return ""
 	}
-	return filepath.Join(dir, "signing_pks.json")
+	return filepath.Join(dir, s.name)
+}
+
+func (s ownerSidecar[T]) empty() *sidecarFile[T] {
+	return &sidecarFile[T]{V: s.version, Owners: map[string]T{}}
+}
+
+func (s ownerSidecar[T]) decode(raw []byte) (*sidecarFile[T], bool) {
+	var f sidecarFile[T]
+	if json.Unmarshal(raw, &f) != nil || f.V != s.version || f.Owners == nil {
+		return nil, false
+	}
+	return &f, true
+}
+
+func (s ownerSidecar[T]) load() *sidecarFile[T] {
+	raw, err := os.ReadFile(s.path())
+	if err != nil {
+		return s.empty()
+	}
+	if f, ok := s.decode(raw); ok {
+		return f
+	}
+	return s.empty()
+}
+
+func (s ownerSidecar[T]) store(f *sidecarFile[T]) error {
+	data, err := json.Marshal(f)
+	if err != nil {
+		return err
+	}
+	path := s.path()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return err
+	}
+	return fsutil.WriteFileAtomic(path, data, 0600)
 }
 
 func signingPinOwner() string {
@@ -63,32 +118,22 @@ func signingPinOwner() string {
 	return crypto.AccountFingerprint(raw)
 }
 
-type signingPksFile struct {
-	V      int                 `json:"v"`
-	Owners map[string][]string `json:"owners"`
-}
-
-func loadSigningPkFile() *signingPksFile {
-	empty := &signingPksFile{V: 2, Owners: map[string][]string{}}
-	path := signingPksPath()
-	if path == "" {
-		return empty
-	}
-	raw, err := os.ReadFile(path)
+func loadSigningPkFile() *sidecarFile[[]string] {
+	raw, err := os.ReadFile(ownSigningPins.path())
 	if err != nil {
-		return empty
+		return ownSigningPins.empty()
 	}
-	var f signingPksFile
-	if json.Unmarshal(raw, &f) == nil && f.V == 2 && f.Owners != nil {
-		return &f
+	if f, ok := ownSigningPins.decode(raw); ok {
+		return f
 	}
+	f := ownSigningPins.empty()
 	var legacy []string
 	if json.Unmarshal(raw, &legacy) == nil && len(legacy) > 0 {
 		if owner := signingPinOwner(); owner != "" {
-			return &signingPksFile{V: 2, Owners: map[string][]string{owner: legacy}}
+			f.Owners[owner] = legacy
 		}
 	}
-	return empty
+	return f
 }
 
 func loadSigningPkSet() []string {
@@ -100,9 +145,8 @@ func loadSigningPkSet() []string {
 }
 
 func rememberSigningEdPub(pub []byte) {
-	path := signingPksPath()
 	owner := signingPinOwner()
-	if path == "" || owner == "" {
+	if ownSigningPins.path() == "" || owner == "" {
 		return
 	}
 	b64 := base64.StdEncoding.EncodeToString(pub)
@@ -116,12 +160,7 @@ func rememberSigningEdPub(pub []byte) {
 		set = set[len(set)-ownSigningPksMax:]
 	}
 	f.Owners[owner] = set
-	data, err := json.Marshal(f)
-	if err != nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	_ = fsutil.WriteFileAtomic(path, data, 0600)
+	_ = ownSigningPins.store(f)
 }
 
 func SigningPinCount() int {

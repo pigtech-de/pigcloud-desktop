@@ -40,19 +40,35 @@ export function trayMenu(snapshot, t, actions) {
             {label: t('desktopNativeOpenFolder'), click: () => actions.folder(pair.id)},
         ]});
     }
-    items.push({type: 'separator'}, {label: t('desktopNativeQuit'), click: actions.quit});
+    items.push({type: 'separator'});
+    if (snapshot.updates?.downloaded && snapshot.updates.installable) {
+        items.push({label: t('desktopNativeUpdateReady'), click: actions.install});
+    }
+    items.push({label: t('desktopNativeQuit'), click: actions.quit});
     return items;
 }
 
-export function statusBitmap(bitmap, width, height, state) {
+export function trayImageName(platform, systemUsesDark) {
+    if (platform === 'darwin') return 'trayTemplate.png';
+    return systemUsesDark ? 'tray-light.png' : 'tray-dark.png';
+}
+
+export function statusBitmap(bitmap, width, height, state, {template = false, scale = 1} = {}) {
     const result = Buffer.from(bitmap);
-    if (result.length !== width * height * 4 || width < 12 || height < 12) return result;
-    const left = width - 11;
-    const top = height - 11;
+    const badge = 11 * scale;
+    if (result.length !== width * height * 4 || width < badge + 1 || height < badge + 1) return result;
+    const left = width - badge;
+    const top = height - badge;
     const pixel = (x, y, shade) => {
-        const offset = ((top + y) * width + left + x) * 4;
-        result[offset] = result[offset + 1] = result[offset + 2] = shade;
-        result[offset + 3] = 255;
+        for (let dy = 0; dy < scale; dy++) for (let dx = 0; dx < scale; dx++) {
+            const offset = ((top + y * scale + dy) * width + left + x * scale + dx) * 4;
+            if (template && shade === 255) {
+                result[offset + 3] = 0;
+                continue;
+            }
+            result[offset] = result[offset + 1] = result[offset + 2] = shade;
+            result[offset + 3] = 255;
+        }
     };
     for (let y = 0; y < 11; y++) for (let x = 0; x < 11; x++) {
         const distance = (x - 5) ** 2 + (y - 5) ** 2;

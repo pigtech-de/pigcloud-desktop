@@ -42,9 +42,7 @@ func runRecentList() {
 
 	for i := range payload.Recents {
 		item := &payload.Recents[i]
-		if item.E2EEDisplayName != "" {
-			item.Name = e2ee.DecryptE2EEName(item.E2EEDisplayName)
-		}
+		item.Name = e2ee.ResolveName(item.E2EEDisplayName, item.Name)
 	}
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {

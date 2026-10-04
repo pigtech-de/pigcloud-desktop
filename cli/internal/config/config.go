@@ -1,84 +1,17 @@
 package config
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"pigcloud/internal/fsutil"
 	"runtime"
-
-	"github.com/zalando/go-keyring"
 )
-
-const keyringService = "pigcloud-cli"
-
-func keyringUserFor(endpoint string) string {
-	u, err := url.Parse(endpoint)
-	if err != nil || u.Host == "" {
-		return "default"
-	}
-	return u.Host
-}
-
-func keyringUser() string {
-	if cfg == nil {
-		return "default"
-	}
-	return keyringUserFor(cfg.Endpoint)
-}
-
-func keyringSet(apiKey string) bool {
-	if apiKey == "" {
-		return false
-	}
-	return keyring.Set(keyringService, keyringUser(), apiKey) == nil
-}
-
-func keyringGet() (string, bool) {
-	v, err := keyring.Get(keyringService, keyringUser())
-	if err != nil {
-		return "", false
-	}
-	return v, true
-}
-
-func keyringDelete() {
-	_ = keyring.Delete(keyringService, keyringUser())
-}
-
-func e2eeKeyringUser() string {
-	return keyringUser() + "|e2ee"
-}
-
-func keyringSetDeviceKey(deviceKey []byte) bool {
-	if len(deviceKey) != 32 {
-		return false
-	}
-	return keyring.Set(keyringService, e2eeKeyringUser(), hex.EncodeToString(deviceKey)) == nil
-}
-
-func keyringGetDeviceKey() ([]byte, bool) {
-	v, err := keyring.Get(keyringService, e2eeKeyringUser())
-	if err != nil {
-		return nil, false
-	}
-	decoded, err := hex.DecodeString(v)
-	if err != nil || len(decoded) != 32 {
-		return nil, false
-	}
-	return decoded, true
-}
-
-func keyringDeleteDeviceKey() {
-	_ = keyring.Delete(keyringService, e2eeKeyringUser())
-}
 
 func APIKeyInKeychain() bool {
 	Get()
-	v, ok := keyringGet()
+	v, ok := loadAPIKey()
 	return ok && v != ""
 }
 
@@ -149,7 +82,7 @@ func Load() {
 		}
 	}
 
-	if v, ok := keyringGet(); ok {
+	if v, ok := loadAPIKey(); ok {
 		cfg.APIKey = v
 	}
 }
@@ -163,7 +96,7 @@ func Save() error {
 		return fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	keychainOk := keyringSet(current.APIKey)
+	keychainOk := storeAPIKey(current.APIKey)
 
 	persist := *current
 	if keychainOk {
@@ -240,21 +173,21 @@ func GetEndpoint() string {
 
 func SetEndpoint(endpoint string) error {
 	current := Get()
-	if keyringUserFor(current.Endpoint) == keyringUserFor(endpoint) {
+	if secretKeyFor(current.Endpoint) == secretKeyFor(endpoint) {
 		current.Endpoint = endpoint
 		return Save()
 	}
 
-	deviceKey, hadDeviceKey := keyringGetDeviceKey()
-	keyringDelete()
-	keyringDeleteDeviceKey()
+	deviceKey, hadDeviceKey := loadDeviceKey()
+	deleteAPIKey()
+	deleteDeviceKey()
 
 	current.Endpoint = endpoint
 	if err := Save(); err != nil {
 		return err
 	}
 	if hadDeviceKey {
-		keyringSetDeviceKey(deviceKey)
+		storeDeviceKey(deviceKey)
 	}
 	return nil
 }
@@ -282,8 +215,8 @@ func SetCwd(cwd string) error {
 }
 
 func Clear() error {
-	keyringDelete()
-	keyringDeleteDeviceKey()
+	deleteAPIKey()
+	deleteDeviceKey()
 
 	cfg = &Config{
 		Endpoint: DefaultEndpoint,
@@ -354,11 +287,11 @@ func SetSigningKeys(
 }
 
 func StoreE2EEDeviceKey(deviceKey []byte) bool {
-	return keyringSetDeviceKey(deviceKey)
+	return storeDeviceKey(deviceKey)
 }
 
 func LoadE2EEDeviceKey() ([]byte, bool) {
-	return keyringGetDeviceKey()
+	return loadDeviceKey()
 }
 
 func IsDeviceWrapped() bool {

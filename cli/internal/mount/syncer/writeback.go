@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -25,6 +26,8 @@ const (
 
 	processBatchSize = 10
 )
+
+var errTeeSealStale = errors.New("upload was sealed to a retired scanner key")
 
 type WritebackProcessor struct {
 	vfs      *vfs.VFS
@@ -240,6 +243,10 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 			upload = w.processUpload
 		}
 		uploaded, err = upload(ctx, entry)
+		if errors.Is(err, errTeeSealStale) {
+			mlog.Warnf("writeback: the scanner's sealing key changed, sealing %s again", entry.RemotePath)
+			uploaded, err = upload(ctx, entry)
+		}
 	case "mkdir":
 		err = w.processMkdir(ctx, entry)
 	case "delete":
@@ -549,7 +556,7 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 		"signing_pk_mldsa":   base64.StdEncoding.EncodeToString(signPub.Mldsa),
 	}
 
-	teeKeys := e2ee.FetchTeeEnclaveKeySet()
+	teeKeys := e2ee.FetchTeeEnclaveKeySet(ctx)
 	if teeKeys == nil && !e2ee.TeeScannerDisabledByServer() {
 		if refusal := e2ee.TeeEnclaveKeyRefusal(); refusal != nil {
 			return uploadedContent{}, fmt.Errorf("TEE enclave key refused: %w", refusal)
@@ -592,6 +599,15 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 	}
 	resp, err := w.client.Upload(ctx, tmpEncPath, uploadDir, nil, e2eeOpts)
 	if err != nil {
+		if teeKeys != nil {
+			stale, refusal := e2ee.TeeSealWentStale(ctx, err, teeKeys)
+			if refusal != nil {
+				return uploadedContent{}, fmt.Errorf("TEE enclave key refused: %w", refusal)
+			}
+			if stale {
+				return uploadedContent{}, fmt.Errorf("%w: %w", errTeeSealStale, classifyUploadError(err))
+			}
+		}
 		return uploadedContent{}, classifyUploadError(err)
 	}
 	if resp == nil || !resp.Success {

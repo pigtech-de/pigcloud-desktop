@@ -1,10 +1,6 @@
 package cmd
 
 import (
-	"context"
-	"os"
-	"os/signal"
-
 	"pigcloud/internal/agent"
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
@@ -86,7 +82,7 @@ func runAPIKeyRevoke() {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	_, payload := cmdutil.ExecuteCommand[api.APIKeyRevokePayload](ctx, "ak", map[string]string{

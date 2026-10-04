@@ -1,0 +1,31 @@
+{
+  "vector_kind": "pdk_argon2id_v1",
+  "spec_version": 1,
+  "description": "Argon2id PDK derivation + private-key wrap (XChaCha20-Poly1305, one fresh nonce per half). Each impl must derive pdk_b64 from the password + kdf params and unwrap both halves to private_key.",
+  "generator": {
+    "impl": "go",
+    "package": "pigcloud/internal/crypto",
+    "function": "EncryptHybridPrivateKey",
+    "tool": "cli/internal/crypto/genvec_test.go (PIGCLOUD_GEN_VECTORS=1 go test -run TestGeneratePdkWrapVector)",
+    "generated_at": "2026-07-11T18:27:41Z"
+  },
+  "password": "pigcloud conformance passphrase 🐷 2026",
+  "kdf": {
+    "algorithm": "argon2id13",
+    "salt_b64": "PQrj8bssnHi0eogl2uUYiA==",
+    "ops_limit": 3,
+    "mem_limit_bytes": 268435456,
+    "key_size": 32
+  },
+  "pdk_b64": "R2bofTdrbO7GQmpmjiM624SPM0zX4OVYtj7QV8En4Fo=",
+  "private_key": {
+    "x25519_sk_b64": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8=",
+    "mlkem_seed_b64": "AQYLEBUaHyQpLjM4PUJHTFFWW2Blam90eX6DiI2Sl5yhpquwtbq/xMnO09jd4ufs8fb7AAUKDxQZHiMoLTI3PA=="
+  },
+  "wrapped": {
+    "x25519_ciphertext_b64": "QBdwn9JiiU/gTgpimNzEV3tXho/GAS90G2n5CY1q2Qsm1K8w4lXMU69meywYYdxu",
+    "x25519_nonce_b64": "MfVS2x2McVbb39if7gaOOOXVrkLdawvd",
+    "kyber_ciphertext_b64": "8tKIAz4c2UOoWluvFWhMhttHOVkFNFwdbIuxUq/MMqSygETXJriFYL6xFZG52+GvCGNvaNJLfsEA+5xcDBthtPGSb3jum9nbVuNAYlzQA3E=",
+    "kyber_nonce_b64": "qzy1jA6v3ljfrBD9xoIMzo3+KcKTaOAM"
+  }
+}

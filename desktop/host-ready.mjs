@@ -6,7 +6,7 @@ export function queueEngine(engine) {
     const readiness = new Promise((resolve, reject) => {resolveReady = resolve; rejectReady = reject;});
     readiness.catch(() => {});
     const queued = {};
-    for (const name of ['getSettings', 'saveSettings', 'status', 'start', 'stop', 'unlock', 'files', 'activity', 'conflicts', 'resolve', 'retry', 'flush', 'setCliPath', 'folderPath', 'loginCli']) {
+    for (const name of ['getSettings', 'saveSettings', 'status', 'start', 'stop', 'unlock', 'files', 'activity', 'conflicts', 'resolve', 'retry', 'flush', 'setCliPath', 'folderPath', 'loginCli', 'reportAppearance']) {
         queued[name] = async (...args) => {
             await readiness;
             if (closed) throw new Error('Desktop sync is shutting down.');

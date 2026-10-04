@@ -5,17 +5,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/e2ee"
 	"pigcloud/internal/output"
+	"pigcloud/internal/progress"
 
 	"github.com/spf13/cobra"
 )
@@ -117,7 +120,7 @@ func runUpload(localPath, remotePath string) {
 			remoteCheck = remoteCheck + fileName
 		}
 		inOpts := map[string]string{"source": remoteCheck}
-		e2ee.AddPathTokensFor(inOpts, remoteCheck, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(inOpts, remoteCheck, e2ee.SelfAndParent, ExitWithError)
 		client := api.NewClient()
 		resp, _ := client.Execute(ctx, "in", inOpts)
 		if resp != nil && resp.Success {
@@ -140,51 +143,67 @@ func runUpload(localPath, remotePath string) {
 	}
 
 	var e2eeOpts map[string]string
-	if e2ee.HasE2EEKeys() {
-		encPath, sealedKey, encMeta, teeSealedKey, plaintextHmac := e2ee.HandleE2EEUpload(localPath, ExitWithError)
-		defer os.Remove(encPath)
+	var sealed *e2ee.UploadArtifacts
+	defer func() {
+		if sealed != nil {
+			os.Remove(sealed.EncryptedPath)
+		}
+	}()
+	seal := func() *e2ee.UploadArtifacts {
+		sealed = cmdutil.HandleE2EEUpload(ctx, localPath, ExitWithError)
+		if sealed == nil {
+			return nil
+		}
+		encPath := sealed.EncryptedPath
 		uploadPath = encPath
 		e2eeOpts = map[string]string{
-			"sealed_key":      sealedKey,
-			"encryption_meta": encMeta,
+			"sealed_key":      sealed.SealedKeyB64,
+			"encryption_meta": sealed.EncMetaB64,
 			"_original_name":  fileName,
 		}
 		applyPreserveTimestamps(e2eeOpts, stat, localPath)
-		if teeSealedKey != "" {
-			e2eeOpts["tee_sealed_key"] = teeSealedKey
+		if sealed.TeeSealedKeyB64 != "" {
+			e2eeOpts["tee_sealed_key"] = sealed.TeeSealedKeyB64
 		}
-		if plaintextHmac != "" {
-			e2eeOpts["plaintext_hmac"] = plaintextHmac
+		if sealed.PlaintextHmacHex != "" {
+			e2eeOpts["plaintext_hmac"] = sealed.PlaintextHmacHex
 		}
 		if ulForce {
 			e2eeOpts["force"] = "true"
 		}
-		sigEd, sigMl, pkEd, pkMl := e2ee.SignEncryptedFile(encPath, ExitWithError)
+		sigEd, sigMl, pkEd, pkMl := cmdutil.SignEncryptedFile(encPath, ExitWithError)
 		e2eeOpts["signature_ed25519"] = sigEd
 		e2eeOpts["signature_mldsa"] = sigMl
 		e2eeOpts["signing_pk_ed25519"] = pkEd
 		e2eeOpts["signing_pk_mldsa"] = pkMl
 		uploadFullPath := strings.TrimLeft(fullUploadPath, "/")
-		e2ee.AddE2eeNameFields(e2eeOpts, fileName, uploadFullPath, ExitWithError)
+		cmdutil.AddE2eeNameFields(e2eeOpts, fileName, uploadFullPath, ExitWithError)
 
-		e2ee.AddPathTokensFor(e2eeOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(e2eeOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 		if encStat, err := os.Stat(encPath); err == nil {
 			fileSize = encStat.Size()
 		}
+		return sealed
+	}
+	if e2ee.HasE2EEKeys() {
+		seal()
 	}
 
-	client := api.NewClient()
+	client := api.NewClient().WaitOutScanBudget()
 	if forceCollisionBlocked(ctx, client, fullUploadPath, fileSize) {
 		output.PrintError(fullUploadPath + " already exists. " + forceCollisionHint)
 		ExitWithError()
 	}
 
-	bar := output.NewProgressBar(fileSize, "Uploading "+fileName)
+	bar := progress.NewBar(fileSize, "Uploading "+fileName)
 
-	resp, err := client.Upload(ctx, uploadPath, resolvedPath, func(sent, total int64) {
-		bar.Set64(sent)
-	}, e2eeOpts)
+	var resp *api.Response
+	sealed, resp, err = sendResealingOnce(ctx, fileName, sealed, seal, func() (*api.Response, error) {
+		return uploadHonouringRateLimit(ctx, client, &rateLimitGate{}, fileName, uploadPath, resolvedPath, func(sent, total int64) {
+			bar.Set64(sent)
+		}, e2eeOpts)
+	})
 
 	bar.Finish()
 
@@ -266,7 +285,7 @@ func runRecursiveUpload(ctx context.Context, localDir, remotePath string) {
 		len(files), output.FormatSize(&totalSize), dirName, remoteRoot)
 
 	dirs := collectDirs(localDir)
-	client := api.NewClient()
+	client := api.NewClient().WaitOutScanBudget()
 
 	if err := ensureRemoteDir(ctx, client, remoteRoot); err != nil {
 		output.PrintError("Failed to create remote directory: " + err.Error())
@@ -313,6 +332,63 @@ type recursiveUploader struct {
 	succeeded atomic.Int64
 	failed    atomic.Int64
 	skipped   atomic.Int64
+	rateGate  rateLimitGate
+}
+
+const ulRateLimitRetries = 3
+
+type rateLimitGate struct {
+	mu    sync.Mutex
+	until time.Time
+}
+
+func (g *rateLimitGate) holdUntil(until time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if until.After(g.until) {
+		g.until = until
+	}
+}
+
+func (g *rateLimitGate) wait(ctx context.Context) error {
+	for {
+		g.mu.Lock()
+		remaining := time.Until(g.until)
+		g.mu.Unlock()
+		if remaining <= 0 {
+			return nil
+		}
+		select {
+		case <-time.After(remaining):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func uploadHonouringRateLimit(ctx context.Context, client *api.Client, gate *rateLimitGate, label, localPath, remoteDir string, progress func(sent, total int64), opts map[string]string) (*api.Response, error) {
+	opts = maps.Clone(opts)
+	if opts == nil {
+		opts = map[string]string{}
+	}
+	if opts["upload_idempotency_key"] == "" {
+		opts["upload_idempotency_key"] = api.NewUploadIdempotencyKey()
+	}
+	for attempt := 0; ; attempt++ {
+		if err := gate.wait(ctx); err != nil {
+			return nil, err
+		}
+		resp, err := client.Upload(ctx, localPath, remoteDir, progress, maps.Clone(opts))
+		if err == nil || !api.IsRateLimited(err) || attempt >= ulRateLimitRetries {
+			return resp, err
+		}
+		delay, spent := api.ScanBudgetWait(err)
+		if !spent {
+			delay = api.RateLimitDelay(attempt, api.RetryAfterHint(err))
+		}
+		gate.holdUntil(time.Now().Add(delay))
+		output.PrintWarning(fmt.Sprintf("%s: upload rate limit reached, retrying in %s", label, delay.Round(time.Second)))
+	}
 }
 
 func (u *recursiveUploader) alreadyUploaded(remoteFilePath string) bool {
@@ -321,51 +397,81 @@ func (u *recursiveUploader) alreadyUploaded(remoteFilePath string) bool {
 	}
 	opts := map[string]string{"source": remoteFilePath}
 	if u.useE2EE {
-		e2ee.AddPathTokensFor(opts, remoteFilePath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(opts, remoteFilePath, e2ee.SelfAndParent, ExitWithError)
 	}
 	resp, _ := u.client.Execute(u.ctx, "in", opts)
 	return resp != nil && resp.Success
 }
 
-func (u *recursiveUploader) sealForUpload(f fileEntry, remoteFilePath string) (string, int64, map[string]string) {
+func (u *recursiveUploader) sealForUpload(f fileEntry, remoteFilePath string) (*e2ee.UploadArtifacts, int64, map[string]string) {
 	fileName := filepath.Base(f.localPath)
-	encPath, sealedKey, encMeta, teeSealedKey, plaintextHmac := e2ee.HandleE2EEUpload(f.localPath, ExitWithError)
+	sealed := cmdutil.HandleE2EEUpload(u.ctx, f.localPath, ExitWithError)
+	if sealed == nil {
+		return nil, 0, nil
+	}
+	encPath := sealed.EncryptedPath
 
 	opts := map[string]string{
-		"sealed_key":      sealedKey,
-		"encryption_meta": encMeta,
+		"sealed_key":      sealed.SealedKeyB64,
+		"encryption_meta": sealed.EncMetaB64,
 		"_original_name":  fileName,
 	}
 	if fileStat, statErr := os.Stat(f.localPath); statErr == nil {
 		applyPreserveTimestamps(opts, fileStat, f.localPath)
 	}
-	if teeSealedKey != "" {
-		opts["tee_sealed_key"] = teeSealedKey
+	if sealed.TeeSealedKeyB64 != "" {
+		opts["tee_sealed_key"] = sealed.TeeSealedKeyB64
 	}
-	if plaintextHmac != "" {
-		opts["plaintext_hmac"] = plaintextHmac
+	if sealed.PlaintextHmacHex != "" {
+		opts["plaintext_hmac"] = sealed.PlaintextHmacHex
 	}
 	if ulForce {
 		opts["force"] = "true"
 	}
 
-	sigEd, sigMl, pkEd, pkMl := e2ee.SignEncryptedFile(encPath, ExitWithError)
+	sigEd, sigMl, pkEd, pkMl := cmdutil.SignEncryptedFile(encPath, ExitWithError)
 	opts["signature_ed25519"] = sigEd
 	opts["signature_mldsa"] = sigMl
 	opts["signing_pk_ed25519"] = pkEd
 	opts["signing_pk_mldsa"] = pkMl
 
 	fullUploadPath := strings.TrimLeft(remoteFilePath, "/")
-	e2ee.AddE2eeNameFields(opts, fileName, fullUploadPath, ExitWithError)
+	cmdutil.AddE2eeNameFields(opts, fileName, fullUploadPath, ExitWithError)
 	if parentDir := path.Dir(fullUploadPath); parentDir != "." && parentDir != "" {
-		e2ee.AddPathTokensFor(opts, parentDir, e2ee.SelfAndAncestors, ExitWithError)
+		cmdutil.AddPathTokensFor(opts, parentDir, e2ee.SelfAndAncestors, ExitWithError)
 	}
 
 	uploadSize := f.size
 	if encStat, err := os.Stat(encPath); err == nil {
 		uploadSize = encStat.Size()
 	}
-	return encPath, uploadSize, opts
+	return sealed, uploadSize, opts
+}
+
+const staleTeeSealNotice = "the scanner's sealing key changed, sealing the file again"
+
+var teeSealWentStale = e2ee.TeeSealWentStale
+
+func sendResealingOnce(ctx context.Context, label string, sealed *e2ee.UploadArtifacts, reseal func() *e2ee.UploadArtifacts, send func() (*api.Response, error)) (*e2ee.UploadArtifacts, *api.Response, error) {
+	resp, err := send()
+	if sealed == nil {
+		return nil, resp, err
+	}
+	stale, refusal := teeSealWentStale(ctx, err, sealed.TeeKeySet)
+	if refusal != nil {
+		return sealed, nil, fmt.Errorf("security scanner refused: %w", refusal)
+	}
+	if !stale {
+		return sealed, resp, err
+	}
+	os.Remove(sealed.EncryptedPath)
+	output.PrintWarning(label + ": " + staleTeeSealNotice)
+	next := reseal()
+	if next == nil {
+		return nil, nil, err
+	}
+	resp, err = send()
+	return next, resp, err
 }
 
 func (u *recursiveUploader) uploadOne(i int, f fileEntry) {
@@ -385,33 +491,48 @@ func (u *recursiveUploader) uploadOne(i int, f fileEntry) {
 	uploadPath := f.localPath
 	uploadSize := f.size
 	var e2eeOpts map[string]string
-	var tempEncrypted string
+	var sealed *e2ee.UploadArtifacts
+	removeSealed := func() {
+		if sealed != nil {
+			os.Remove(sealed.EncryptedPath)
+		}
+	}
 
 	if u.useE2EE {
-		tempEncrypted, uploadSize, e2eeOpts = u.sealForUpload(f, remoteFilePath)
-		uploadPath = tempEncrypted
+		sealed, uploadSize, e2eeOpts = u.sealForUpload(f, remoteFilePath)
+		if sealed == nil {
+			u.failed.Add(1)
+			return
+		}
+		uploadPath = sealed.EncryptedPath
 	}
 
 	if forceCollisionBlocked(u.ctx, u.client, remoteFilePath, uploadSize) {
-		if tempEncrypted != "" {
-			os.Remove(tempEncrypted)
-		}
+		removeSealed()
 		output.PrintError("Skipping " + f.relPath + ": already exists. " + forceCollisionHint)
 		u.failed.Add(1)
 		return
 	}
 
-	bar := output.NewProgressBar(uploadSize, label)
+	bar := progress.NewBar(uploadSize, label)
 
-	resp, err := u.client.Upload(u.ctx, uploadPath, remoteParentDir(remoteFilePath), func(sent, total int64) {
-		bar.Set64(sent)
-	}, e2eeOpts)
+	reseal := func() *e2ee.UploadArtifacts {
+		next, _, opts := u.sealForUpload(f, remoteFilePath)
+		if next != nil {
+			uploadPath, e2eeOpts = next.EncryptedPath, opts
+		}
+		return next
+	}
+	var resp *api.Response
+	var err error
+	sealed, resp, err = sendResealingOnce(u.ctx, f.relPath, sealed, reseal, func() (*api.Response, error) {
+		return uploadHonouringRateLimit(u.ctx, u.client, &u.rateGate, f.relPath, uploadPath, remoteParentDir(remoteFilePath), func(sent, total int64) {
+			bar.Set64(sent)
+		}, e2eeOpts)
+	})
 
 	bar.Finish()
-
-	if tempEncrypted != "" {
-		os.Remove(tempEncrypted)
-	}
+	removeSealed()
 
 	if err != nil {
 		output.PrintError("Failed to upload " + f.relPath + ": " + err.Error())
@@ -472,9 +593,9 @@ func ensureRemoteDir(ctx context.Context, client *api.Client, remotePath string)
 		"parents": "true",
 	}
 	if e2ee.HasE2EEKeys() {
-		e2ee.AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, ExitWithError)
 		if trimmed := strings.TrimPrefix(remotePath, "/"); trimmed != "" {
-			e2ee.AddE2eeNameFieldsForMkParents(options, strings.Split(trimmed, "/"), ExitWithError)
+			cmdutil.AddE2eeNameFieldsForMkParents(options, strings.Split(trimmed, "/"), ExitWithError)
 		}
 	}
 	resp, err := client.Execute(ctx, "mk", options)
@@ -498,7 +619,7 @@ func forceCollisionBlocked(ctx context.Context, client *api.Client, remoteFilePa
 		return false
 	}
 	opts := map[string]string{"source": remoteFilePath}
-	e2ee.AddPathTokensFor(opts, remoteFilePath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(opts, remoteFilePath, e2ee.SelfAndParent, ExitWithError)
 	resp, err := client.Execute(ctx, "in", opts)
 	return err == nil && resp != nil && resp.Success
 }

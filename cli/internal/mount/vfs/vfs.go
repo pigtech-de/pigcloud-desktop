@@ -13,6 +13,8 @@ import (
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/crypto"
+	"pigcloud/internal/e2ee"
+	"pigcloud/internal/fsutil"
 	"pigcloud/internal/mount/cache"
 	"pigcloud/internal/mount/mlog"
 	"pigcloud/internal/mount/transfer"
@@ -231,14 +233,11 @@ func (v *VFS) finishDownload(node *Node, err error) {
 }
 
 func (v *VFS) downloadFailureBarrier(node *Node) error {
-	if node.ID == 0 || v.Cache == nil {
+	if v.Cache == nil {
 		return nil
 	}
-	f, err := v.Cache.GetSyncFailure(node.ID, cache.FailureDownload)
-	if err != nil || f == nil {
-		return nil
-	}
-	if !f.Permanent && time.Now().Unix() >= f.NextRetryAt {
+	f := v.Cache.TransferWithheld(node.ID, cache.FailureDownload)
+	if f == nil {
 		return nil
 	}
 	if f.LastError == "" {
@@ -256,30 +255,7 @@ func (v *VFS) settleDownloadFailure(node *Node, err error) {
 		v.Cache.SetSyncStatus(node.ID, cache.StatusSynced, "")
 		return
 	}
-	if errors.Is(err, context.Canceled) {
-		return
-	}
-	attempts := 1
-	if prev, gerr := v.Cache.GetSyncFailure(node.ID, cache.FailureDownload); gerr == nil && prev != nil {
-		attempts = prev.Attempts + 1
-	}
-	f := &cache.SyncFailure{
-		InodeID:   node.ID,
-		Kind:      cache.FailureDownload,
-		Permanent: cache.IsPermanent(err),
-		Attempts:  attempts,
-		LastError: err.Error(),
-	}
-	if !f.Permanent {
-		f.NextRetryAt = time.Now().Add(cache.TransferBackoff(attempts)).Unix()
-	}
-	v.Cache.RecordSyncFailure(f)
-	if f.Permanent {
-		v.Cache.SetSyncStatus(node.ID, cache.StatusFailed, err.Error())
-		mlog.Errorf("vfs: %s will not be retried: %v", node.RemotePath, err)
-		return
-	}
-	mlog.Warnf("vfs: %s: %v (next attempt in %v)", node.RemotePath, err, cache.TransferBackoff(attempts))
+	v.Cache.RecordTransferFailure("vfs", node.RemotePath, node.ID, cache.FailureDownload, err)
 }
 
 func (v *VFS) Read(node *Node, off int64, size int) ([]byte, error) {
@@ -595,7 +571,7 @@ func (v *VFS) Rename(oldParent *Node, oldName string, newParent *Node, newName s
 	isDir := child.IsDir
 	child.Mu.RUnlock()
 
-	if !IsSafeName(newName) {
+	if !fsutil.IsSafeName(newName) {
 		return ErrInvalidName
 	}
 	if isDir {
@@ -826,8 +802,8 @@ func (v *VFS) populateDir(parent *Node) error {
 
 	seen := make(map[string]bool)
 	for _, entry := range payload.Entries {
-		name := v.decryptName(entry.E2EEDisplayName)
-		if name == "" || name == "(encrypted)" {
+		name := e2ee.OpenLocalName(entry.E2EEDisplayName, v.PrivateKey)
+		if e2ee.IsNameUnavailable(name) {
 			continue
 		}
 
@@ -962,24 +938,6 @@ func (v *VFS) downloadAndCache(node *Node) error {
 	v.Evictor.RunIfNeeded()
 
 	return nil
-}
-
-func (v *VFS) decryptName(e2eeDisplayNameB64 string) string {
-	if e2eeDisplayNameB64 == "" {
-		return ""
-	}
-	sealed, err := base64.StdEncoding.DecodeString(e2eeDisplayNameB64)
-	if err != nil {
-		return "(encrypted)"
-	}
-	name, err := crypto.UnsealDisplayName(sealed, v.PrivateKey)
-	if err != nil {
-		return "(encrypted)"
-	}
-	if !IsSafeName(name) {
-		return "(encrypted)"
-	}
-	return name
 }
 
 func (v *VFS) addE2eeNameFields(options map[string]string, fileName, fullPath string) {

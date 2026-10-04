@@ -8,6 +8,7 @@ import (
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/crypto"
+	"pigcloud/internal/e2ee"
 )
 
 type Executor interface {
@@ -71,11 +72,9 @@ func decodeShell(shell *Shell, keys Keys) (*Node, error) {
 		return nil, fmt.Errorf("tree: node id %q: %w", shell.NodeID, err)
 	}
 
-	name := "(encrypted)"
-	if sealedName, err := base64.StdEncoding.DecodeString(shell.DisplayName); err == nil {
-		if decrypted, err := crypto.UnsealDisplayName(sealedName, keys.Priv); err == nil {
-			name = decrypted
-		}
+	name := e2ee.OpenDisplayName(shell.DisplayName, keys.Priv)
+	if name == "" {
+		name = e2ee.NameUnavailable
 	}
 
 	parent := shell.PlaintextParent

@@ -21,7 +21,7 @@ var pathPreambleSteps = []string{
 	"resolvedPath := cmdutil.ResolvePath(",
 	`"source":`,
 	`"mode":`,
-	"e2ee.AddPathTokensFor(",
+	"cmdutil.AddPathTokensFor(",
 	"cmdutil.ExecuteCommand[",
 	"cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload)",
 }

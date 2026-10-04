@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"pigcloud/internal/agent"
+	"pigcloud/internal/agentkeys"
 	"pigcloud/internal/api"
 	"pigcloud/internal/config"
 	"pigcloud/internal/e2ee"
@@ -27,11 +28,11 @@ func TestReconcilerE2E(t *testing.T) {
 		t.Skip("reconciler E2E: keys locked — run 'pc uk' first")
 	}
 
-	noop := func() {}
-	pub, priv := e2ee.GetKeyPair(noop)
-	nameKey := e2ee.GetNameKey(noop)
-	signPub, signPriv := e2ee.GetSigningKeysIfAvailable(noop)
-	if pub == nil || priv == nil || nameKey == nil || signPub == nil || signPriv == nil {
+	e2ee.SetDefaultKeyAgent(agentkeys.New())
+	pub, priv, keyErr := e2ee.GetKeyPair()
+	nameKey, nameErr := e2ee.GetNameKey()
+	signPub, signPriv := e2ee.GetSigningKeysIfAvailable()
+	if keyErr != nil || nameErr != nil || pub == nil || priv == nil || nameKey == nil || signPub == nil || signPriv == nil {
 		t.Skip("reconciler E2E: keys unavailable from the agent")
 	}
 

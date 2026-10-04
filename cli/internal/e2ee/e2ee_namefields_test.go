@@ -18,7 +18,7 @@ func TestAddE2eeNameFieldsSealsNameAndTokensThePath(t *testing.T) {
 	const fullPath = "docs/reports/Q3 forecast.numbers"
 
 	options := map[string]string{}
-	AddE2eeNameFields(options, fileName, fullPath, func() { t.Fatal("name-field shaping signalled failure") })
+	addE2eeNameFields(options, fileName, fullPath, func() { t.Fatal("name-field shaping signalled failure") })
 
 	sealedB64, ok := options["e2ee_display_name"]
 	if !ok {
@@ -58,8 +58,8 @@ func TestAddE2eeNameFieldsPathTokenDeterministicNameSealNonDeterministic(t *test
 
 	first := map[string]string{}
 	second := map[string]string{}
-	AddE2eeNameFields(first, fileName, fullPath, func() { t.Fatal("first shaping signalled failure") })
-	AddE2eeNameFields(second, fileName, fullPath, func() { t.Fatal("second shaping signalled failure") })
+	addE2eeNameFields(first, fileName, fullPath, func() { t.Fatal("first shaping signalled failure") })
+	addE2eeNameFields(second, fileName, fullPath, func() { t.Fatal("second shaping signalled failure") })
 
 	if first["e2ee_path_token"] != second["e2ee_path_token"] {
 		t.Fatal("path token is not deterministic for a fixed path")
@@ -73,7 +73,7 @@ func TestAddE2eeNameFieldsWithoutKeysEmitsNothing(t *testing.T) {
 	isolateKeyEnv(t)
 
 	options := map[string]string{}
-	AddE2eeNameFields(options, "notes.txt", "docs/notes.txt", func() {
+	addE2eeNameFields(options, "notes.txt", "docs/notes.txt", func() {
 		t.Error("keyless shaping signalled failure")
 	})
 	if len(options) != 0 {
@@ -88,7 +88,7 @@ func TestAddE2eeNameFieldsForMkParentsBuildsAccumulatedSegments(t *testing.T) {
 	segmentsIn := []string{"projects", "2026", "q3 plans"}
 
 	options := map[string]string{}
-	AddE2eeNameFieldsForMkParents(options, segmentsIn, func() { t.Fatal("mkparents shaping signalled failure") })
+	addE2eeNameFieldsForMkParents(options, segmentsIn, func() { t.Fatal("mkparents shaping signalled failure") })
 
 	raw, ok := options["e2ee_path_segments"]
 	if !ok {
@@ -139,7 +139,7 @@ func TestAddE2eeNameFieldsForMkParentsEmitsNothingForEmptyOrKeyless(t *testing.T
 	t.Run("no keys", func(t *testing.T) {
 		isolateKeyEnv(t)
 		options := map[string]string{}
-		AddE2eeNameFieldsForMkParents(options, []string{"a", "b"}, func() {
+		addE2eeNameFieldsForMkParents(options, []string{"a", "b"}, func() {
 			t.Error("keyless mkparents signalled failure")
 		})
 		if len(options) != 0 {
@@ -151,7 +151,7 @@ func TestAddE2eeNameFieldsForMkParentsEmitsNothingForEmptyOrKeyless(t *testing.T
 		isolateKeyEnv(t)
 		unlockFixture(t)
 		options := map[string]string{}
-		AddE2eeNameFieldsForMkParents(options, nil, func() { t.Fatal("empty mkparents signalled failure") })
+		addE2eeNameFieldsForMkParents(options, nil, func() { t.Fatal("empty mkparents signalled failure") })
 		if _, ok := options["e2ee_path_segments"]; ok {
 			t.Fatal("an empty segment list still set e2ee_path_segments")
 		}
@@ -175,7 +175,35 @@ func TestDecryptE2EENameUnsealsViaAgentWhenCacheEmpty(t *testing.T) {
 	if got := DecryptE2EEName(b64(sealed)); got != plaintextName {
 		t.Fatalf("agent-served decrypt returned %q, want %q", got, plaintextName)
 	}
-	if cachedPriv == nil || !bytes.Equal(cachedNameKey, f.nameKey) {
+	if defaultSession.priv == nil || !bytes.Equal(defaultSession.nameKey, f.nameKey) {
 		t.Fatal("agent-served decrypt did not populate the key caches")
+	}
+}
+
+func TestDecryptE2EENameRefusesUnsafeSegments(t *testing.T) {
+	isolateKeyEnv(t)
+	f := unlockFixture(t)
+
+	for _, bad := range []string{
+		"..", ".", "../../etc/cron.d/x", "a/b", `a\b`, "a\x00b",
+		"\x1b]52;c;aGk=\x07a.pdf", "a\x7fb", "a\u009bb", "line\nbreak",
+	} {
+		sealed, err := crypto.SealDisplayName(bad, f.pub)
+		if err != nil {
+			t.Fatalf("seal %q: %v", bad, err)
+		}
+		if got := DecryptE2EEName(b64(sealed)); got != "(encrypted)" {
+			t.Errorf("DecryptE2EEName(sealed %q) = %q, want the (encrypted) sentinel", bad, got)
+		}
+	}
+
+	for _, good := range []string{"report.pdf", "CON.txt", "NUL.log", "notes.", "a "} {
+		sealed, err := crypto.SealDisplayName(good, f.pub)
+		if err != nil {
+			t.Fatalf("seal %q: %v", good, err)
+		}
+		if got := DecryptE2EEName(b64(sealed)); got != good {
+			t.Errorf("DecryptE2EEName(sealed %q) = %q, want it shown on every platform", good, got)
+		}
 	}
 }

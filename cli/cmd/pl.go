@@ -5,8 +5,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"os"
-	"os/signal"
 	"strings"
 
 	"pigcloud/internal/api"
@@ -135,7 +133,7 @@ func runLinkCreate(targetPath string) {
 		options["max-downloads"] = plMaxDownloads
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
 
 	var linkKeyFragment string
 	var linkKeyRaw []byte
@@ -192,7 +190,7 @@ func generateLinkKey(ctx context.Context, filePath string) (string, string, stri
 	client := api.NewClient()
 
 	listKeysOpts := map[string]string{"source": filePath}
-	e2ee.AddPathTokensFor(listKeysOpts, filePath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(listKeysOpts, filePath, e2ee.SelfOnly, ExitWithError)
 	keysResp, err := client.Execute(ctx, "e2ee_list_keys", listKeysOpts)
 	if err != nil || !keysResp.Success {
 		return "", "", "", nil
@@ -205,7 +203,7 @@ func generateLinkKey(ctx context.Context, filePath string) (string, string, stri
 		return "", "", "", nil
 	}
 
-	_, privKey := e2ee.GetKeyPair(ExitWithError)
+	_, privKey := cmdutil.GetKeyPair(ExitWithError)
 
 	sealedBytes, err := base64.StdEncoding.DecodeString(keysPayload.Keys[0].SealedKey)
 	if err != nil {
@@ -319,7 +317,7 @@ func runLinkDelete(targetPath string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	resolvedPath := cmdutil.ResolvePath(targetPath)
@@ -327,7 +325,7 @@ func runLinkDelete(targetPath string) {
 		"source": resolvedPath,
 		"mode":   "delete",
 	}
-	e2ee.AddPathTokensFor(plDelOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(plDelOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
 	cmdutil.ExecuteCommand[api.LinkActionPayload](ctx, "pl", plDelOpts, ExitWithError)
 
 	output.PrintSuccess("Public link removed for " + output.PrintPath(resolvedPath))
@@ -343,12 +341,7 @@ func runLinkList() {
 
 	for i := range payload.Links {
 		link := &payload.Links[i]
-		if link.E2EEDisplayName != "" {
-			decrypted := e2ee.DecryptE2EEName(link.E2EEDisplayName)
-			if decrypted != "" {
-				link.E2EEDisplayName = decrypted
-			}
-		}
+		link.E2EEDisplayName = e2ee.ResolveName(link.E2EEDisplayName, "")
 	}
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {

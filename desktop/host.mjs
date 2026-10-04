@@ -1,19 +1,25 @@
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {CLOUD_URL, OFFLINE_URL, UPDATE_URL, ACCOUNT_URL, CHANGE_CHANNEL, isTrustedUrl, cloudNavigation, externalUrl, bundlePath, allowsPermission, deviceVerificationUrl} from './host-policy.mjs';
+import {CLOUD_URL, OFFLINE_URL, RELEASE_URL, ACCOUNT_URL, CHANGE_CHANNEL, isTrustedUrl, cloudNavigation, externalUrl, bundlePath, allowsPermission, deviceVerificationUrl} from './host-policy.mjs';
 import {registerSyncIpc} from './host-ipc.mjs';
 import {createStartup} from './host-startup.mjs';
 import {createDesktopLogin} from './host-auth.mjs';
-import {nativeStrings, trayMenu, traySummary, statusBitmap} from './host-tray.mjs';
+import {nativeStrings, trayMenu, traySummary, statusBitmap, trayImageName} from './host-tray.mjs';
 import {createDiagnostics} from './diagnostics.mjs';
 import {queueEngine} from './host-ready.mjs';
+import {createUpdates, syncBusy} from './host-updates.mjs';
+import {configDirectory, readAppearance} from './core/config.mjs';
+import {attentionCount, badgeLabel, dockMenuTemplate, jumpAction, jumpListTemplate, overlayBitmap,
+    paintFor, progressValue, windowIconName, anyRunning, shellMenuKey, systemUsesDark, OVERLAY_SIZE} from './host-appearance.mjs';
 
 const directory = fileURLToPath(new URL('.', import.meta.url));
 const CSP = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'none'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'";
 
-export async function createDesktopHost(electron, createEngine, {offline = false, hidden = false, directory: root = directory} = {}) {
+export async function createDesktopHost(electron, createEngine, {offline = false, hidden = false, directory: root = directory, updater = null, settingsDirectory = configDirectory()} = {}) {
     const {app, BrowserWindow, Tray, Menu, nativeImage, session, ipcMain, protocol, dialog, shell} = electron;
+    const nativeTheme = electron.nativeTheme || {shouldUseDarkColors: false, on: () => {}, removeListener: () => {}};
+    let onThemeChange = null;
     protocol.registerSchemesAsPrivileged([{scheme: 'pigcloud-app', privileges: {standard: true, secure: true, supportFetchAPI: true}}]);
     if (!app.requestSingleInstanceLock()) {
         app.quit();
@@ -42,7 +48,8 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         window.show();
         window.focus();
     };
-    app.on('second-instance', show);
+    let runJump = () => show();
+    app.on('second-instance', (_event, argv) => runJump(jumpAction(argv || [])));
     app.on('activate', show);
     app.setAppUserModelId('de.pigcloud.desktop');
     await app.whenReady();
@@ -72,10 +79,26 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             : join(root, 'resources', process.platform === 'win32' ? 'pc.exe' : 'pc'),
         applyPreferences: next => startup.applyPreferences(next),
     }));
+    let appearance = await readAppearance({directory: settingsDirectory});
+    let systemDarkSeen = Boolean(nativeTheme.shouldUseDarkColors);
+    const systemDark = () => {
+        systemDarkSeen = systemUsesDark(nativeTheme, process.platform, systemDarkSeen);
+        return systemDarkSeen;
+    };
+    const setThemeSource = source => {
+        systemDark();
+        if (electron.nativeTheme) nativeTheme.themeSource = source;
+    };
+    let paint = paintFor(appearance, systemDark());
+    const themedIcon = () => {
+        const image = nativeImage.createFromPath(join(root, 'bundle', windowIconName(appearance)));
+        return image.isEmpty() ? nativeImage.createFromPath(join(root, 'bundle', 'icon.png')) : image;
+    };
+    setThemeSource(paint.themeSource);
     window = new BrowserWindow({
         width: 1200, height: 850, minWidth: 420, minHeight: 560, show: false,
-        title: 'PigCloud', icon: join(root, 'bundle', 'icon.png'),
-        backgroundColor: '#121212', autoHideMenuBar: true,
+        title: 'PigCloud', icon: themedIcon(),
+        backgroundColor: paint.background, autoHideMenuBar: true,
         webPreferences: {
             preload: join(root, 'preload.cjs'), partition: 'persist:pigcloud',
             sandbox: true, contextIsolation: true, nodeIntegration: false,
@@ -191,12 +214,27 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         }}).finally(() => {cliLogin = null; cliLoginAbort = null;});
         return cliLogin;
     };
-    removeIpc = registerSyncIpc({ipcMain, contents: () => window.webContents, engine, dialog,
-        window: () => window, capabilities: () => ({
+    const updates = createUpdates({
+        updater, currentVersion: app.getVersion?.() || '0.0.0', packaged: app.isPackaged,
+        busy: () => syncBusy(lastStatus),
+        record: name => diagnostics.record(name),
+        stop: () => engine.stop({}),
+        shutdown: async () => {
+            if (!shutdown) shutdown = dispose().catch(() => diagnostics.record('shutdown_failed'));
+            await shutdown;
+        },
+        onChange: value => {
+            broadcast(lastStatus ? {...lastStatus, updates: value} : {updates: value});
+            if (lastStatus) refreshTray(lastStatus);
+        },
+    });
+    removeIpc = registerSyncIpc({ipcMain, contents: () => window.webContents, engine, dialog, updates,
+        window: () => window, reportAppearance: value => applyAppearance(value),
+        currentAppearance: () => appearance, capabilities: () => ({
             host: 'electron', pairs: true, tray: Boolean(tray), autostart: app.isPackaged,
             folderPicker: true, cameraRoll: false, wifiOnly: false, flush: true,
-            cliPicker: true, login: true, loginCli: true,
-        }), openCloud, openUpdates: () => shell.openExternal(UPDATE_URL),
+            cliPicker: true, login: true, loginCli: true, updates: true, appearance: true,
+        }), openCloud, openUpdates: () => shell.openExternal(RELEASE_URL),
         openAccountSettings: () => shell.openExternal(ACCOUNT_URL), login: async () => {
             const result = await login.login();
             dialog.showMessageBox(window, {
@@ -214,6 +252,7 @@ export async function createDesktopHost(electron, createEngine, {offline = false
     });
     const trayActions = {
         open: show, settings: () => nativeAction(openSync), quit: () => app.quit(),
+        install: () => nativeAction(() => updates.install()),
         start: pairId => nativeAction(async () => {
             const state = pairId ? lastStatus?.pairs.find(pair => pair.id === pairId)?.state : lastStatus?.state;
             if (['locked', 'noCli', 'notConfigured', 'unsupportedEndpoint'].includes(state)) return openSync();
@@ -229,39 +268,106 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             if (await shell.openPath(path)) throw new Error('folder_open_failed');
         }),
     };
+    runJump = action => {
+        if (action === 'sync') return trayActions.settings();
+        if (action === 'toggle') return anyRunning(lastStatus) ? trayActions.stop() : trayActions.start();
+        if (action === 'cloud') return nativeAction(async () => {await openCloud(); show();});
+        return show();
+    };
+    const isTemplate = process.platform === 'darwin';
+    const loadTrayIcon = () => {
+        const name = trayImageName(process.platform, systemDark());
+        const image = nativeImage.createFromPath(join(root, 'bundle', name));
+        if (image.isEmpty()) throw new Error('tray_unavailable');
+        if (isTemplate) image.setTemplateImage(true);
+        return image;
+    };
+    const badgedTrayIcon = state => {
+        const {width, height} = trayIcon.getSize();
+        const factors = trayIcon.getScaleFactors?.() ?? [1];
+        const badged = nativeImage.createEmpty();
+        for (const scaleFactor of factors) {
+            const deviceWidth = Math.round(width * scaleFactor);
+            const deviceHeight = Math.round(height * scaleFactor);
+            const buffer = statusBitmap(
+                trayIcon.toBitmap({scaleFactor}), deviceWidth, deviceHeight, state,
+                {template: isTemplate, scale: Math.max(1, Math.round(scaleFactor))});
+            badged.addRepresentation({scaleFactor, width: deviceWidth, height: deviceHeight, buffer});
+        }
+        if (isTemplate) badged.setTemplateImage(true);
+        return badged;
+    };
+    let shellMenuShown = null;
+    const refreshShell = state => {
+        const waiting = attentionCount(state);
+        try {
+            window.setProgressBar?.(progressValue(state));
+            window.setOverlayIcon?.(waiting > 0
+                ? nativeImage.createFromBitmap(overlayBitmap(), {width: OVERLAY_SIZE, height: OVERLAY_SIZE})
+                : null, badgeLabel(waiting, t));
+            app.dock?.setBadge?.(waiting > 0 ? badgeLabel(waiting, t) : '');
+            const menuKey = shellMenuKey(state, t);
+            if (menuKey !== shellMenuShown) {
+                app.setJumpList?.(jumpListTemplate(state, t, process.execPath));
+                if (app.dock) app.dock.setMenu?.(Menu.buildFromTemplate(dockMenuTemplate(state, t, runJump)));
+                shellMenuShown = menuKey;
+            }
+        } catch {
+            diagnostics.record('native_action_failed').catch(() => {});
+        }
+    };
     const refreshTray = state => {
         lastStatus = state;
+        refreshShell(state);
         if (!tray) return;
         try {
             tray.setToolTip(traySummary(state, t).slice(0, 127));
-            tray.setContextMenu(Menu.buildFromTemplate(trayMenu(state, t, trayActions)));
-            const {width, height} = trayIcon.getSize();
-            tray.setImage(nativeImage.createFromBitmap(statusBitmap(trayIcon.toBitmap(), width, height, state.state), {width, height}));
+            tray.setContextMenu(Menu.buildFromTemplate(trayMenu({...state, updates: updates.snapshot()}, t, trayActions)));
+            tray.setImage(badgedTrayIcon(state.state));
         } catch {
             tray?.destroy();
             tray = null;
             if (!hidden) show();
         }
     };
+    const applyAppearance = async next => {
+        const resolved = await engine.reportAppearance(next);
+        appearance = resolved;
+        paint = paintFor(resolved, systemDark());
+        setThemeSource(paint.themeSource);
+        if (!window.isDestroyed()) {
+            window.setBackgroundColor?.(paint.background);
+            window.setIcon?.(themedIcon());
+        }
+        return {applied: paint.base};
+    };
     unsubscribe = engine.subscribe(state => {
-        broadcast(state);
+        broadcast({...state, updates: updates.snapshot()});
         refreshTray(state);
-        engine.getSettings().then(value => {settings = value;}).catch(() => {});
+        updates.settle();
+        engine.getSettings().then(value => {
+            settings = value;
+            updates.setPrerelease(value.allowPrerelease);
+        }).catch(() => {});
     });
     try {
-        trayIcon = nativeImage.createFromPath(join(root, 'bundle', 'icon.png')).resize({width: 24, height: 24});
-        if (trayIcon.isEmpty()) throw new Error('tray_unavailable');
+        trayIcon = loadTrayIcon();
         tray = new Tray(trayIcon);
         refreshTray({state: 'starting', pairs: []});
         tray?.on('click', show);
+        onThemeChange = () => {
+            if (!tray) return;
+            try {
+                trayIcon = loadTrayIcon();
+                refreshTray(lastStatus);
+            } catch {  }
+        };
+        nativeTheme.on('updated', onThemeChange);
     } catch {
         tray?.destroy();
         tray = null;
     }
     const canHide = () => Boolean(tray) && process.platform !== 'linux';
-    window.on('minimize', () => {
-        if (!closing && settings.minimizeToTray && canHide()) window.hide();
-    });
     window.on('close', event => {
         if (!closing && settings.minimizeToTray && canHide()) {
             event.preventDefault();
@@ -277,8 +383,10 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         clearTimeout(deadline);
         login.dispose();
         cancelLoginCli();
+        updates.dispose();
         removeIpc();
         unsubscribe();
+        if (onThemeChange) nativeTheme.removeListener?.('updated', onThemeChange);
         try {
             await engine.dispose();
         } finally {
@@ -293,16 +401,19 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         if (!shutdown) shutdown = dispose().catch(() => diagnostics.record('shutdown_failed')).finally(() => app.quit());
     });
     try {
-        await window.loadURL(OFFLINE_URL);
+        if (offline) await window.loadURL(OFFLINE_URL);
+        else await openCloud();
     } catch (error) {
         await dispose();
         throw error;
     }
     if (!hidden && !(process.argv.includes('--minimized') && canHide())) show();
+    updates.start();
     const ready = engine.initialize().then(async snapshot => {
         if (closing) return false;
         settings = await engine.getSettings();
         if (closing) return false;
+        updates.setPrerelease(settings.allowPrerelease);
         refreshTray(snapshot || await engine.status());
         return true;
     }).catch(async () => {
@@ -314,6 +425,5 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         }
         return false;
     });
-    if (!offline) openCloud().catch(() => fallback());
-    return {window, engine, openCloud, dispose, serve, ready};
+    return {window, engine, updates, openCloud, dispose, serve, ready};
 }

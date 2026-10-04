@@ -2,6 +2,7 @@ package e2ee
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -23,7 +24,7 @@ func unlockFixture(t *testing.T) *keyFixture {
 	f := newKeyFixture(t)
 	f.install(t)
 	SetSuppliedPassword(append([]byte(nil), f.password...))
-	if _, priv := GetKeyPair(func() { t.Fatal("fixture unlock failed") }); priv == nil {
+	if _, priv := getKeyPair(func() { t.Fatal("fixture unlock failed") }); priv == nil {
 		t.Fatal("fixture unlock produced no key material")
 	}
 	return f
@@ -162,14 +163,14 @@ func TestGetPublicKeyFailsClosedOnMalformedConfig(t *testing.T) {
 			tc.mutate(config.Get())
 
 			exits := 0
-			pub := GetPublicKey(func() { exits++ })
+			pub := getPublicKey(func() { exits++ })
 			if pub != nil {
 				t.Fatal("malformed config produced a public key set")
 			}
 			if exits == 0 {
 				t.Fatal("GetPublicKey never signalled failure to the caller")
 			}
-			if cachedPub != nil {
+			if defaultSession.pub != nil {
 				t.Fatal("a rejected public key reached the cache")
 			}
 		})
@@ -228,7 +229,7 @@ func TestDecryptE2EENameFailsClosedInsteadOfLeakingPartialText(t *testing.T) {
 func TestComputePathTokenMapsWithoutKeysEmitsNothing(t *testing.T) {
 	isolateKeyEnv(t)
 
-	canonical, legacy := ComputePathTokenMaps([]string{"docs/report.txt"}, func() {
+	canonical, legacy := computePathTokenMaps([]string{"docs/report.txt"}, func() {
 		t.Error("ComputePathTokenMaps signalled failure for an account without keys")
 	})
 	if canonical != "" || legacy != "" {
@@ -236,7 +237,7 @@ func TestComputePathTokenMapsWithoutKeysEmitsNothing(t *testing.T) {
 	}
 
 	options := map[string]string{}
-	AddPathTokens(options, []string{"docs/report.txt"}, func() {})
+	addPathTokens(options, []string{"docs/report.txt"}, func() {})
 	if len(options) != 0 {
 		t.Fatalf("keyless account populated options: %v", options)
 	}
@@ -246,7 +247,7 @@ func TestComputePathTokenMapsKeysByNormalizedPath(t *testing.T) {
 	isolateKeyEnv(t)
 	f := unlockFixture(t)
 
-	canonical, legacy := ComputePathTokenMaps([]string{`docs\sub\report.txt`}, func() {
+	canonical, legacy := computePathTokenMaps([]string{`docs\sub\report.txt`}, func() {
 		t.Fatal("token build signalled failure")
 	})
 	if legacy != "" {
@@ -284,7 +285,7 @@ func TestAddPathTokensOffersLegacyTokenOnlyForAffectedPaths(t *testing.T) {
 	}
 
 	plain := map[string]string{}
-	AddPathTokens(plain, []string{"docs/report.txt"}, func() { t.Fatal("token build signalled failure") })
+	addPathTokens(plain, []string{"docs/report.txt"}, func() { t.Fatal("token build signalled failure") })
 	if _, ok := plain["path_tokens"]; !ok {
 		t.Fatal("path_tokens was not set for a normal path")
 	}
@@ -293,7 +294,7 @@ func TestAddPathTokensOffersLegacyTokenOnlyForAffectedPaths(t *testing.T) {
 	}
 
 	mixed := map[string]string{}
-	AddPathTokens(mixed, []string{"docs/report.txt", affected}, func() {
+	addPathTokens(mixed, []string{"docs/report.txt", affected}, func() {
 		t.Fatal("token build signalled failure")
 	})
 	legacyJSON, ok := mixed["path_tokens_legacy"]
@@ -352,6 +353,7 @@ type teeServer struct {
 
 func newTeeServer(t *testing.T) *teeServer {
 	t.Helper()
+	fastAttestationRetries(t)
 	s := &teeServer{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		s.mu.Lock()
@@ -446,7 +448,7 @@ func TestFetchTeeEnclaveKeySetAttestationGate(t *testing.T) {
 				}
 			})
 
-			got := FetchTeeEnclaveKeySet()
+			got := FetchTeeEnclaveKeySet(context.Background())
 			if tc.wantKeySet {
 				if got == nil {
 					t.Fatal("a key set the CLI should accept was refused")
@@ -459,7 +461,7 @@ func TestFetchTeeEnclaveKeySetAttestationGate(t *testing.T) {
 			if got != nil {
 				t.Fatal("an untrusted or malformed attestation yielded a sealing target")
 			}
-			if cachedTeeEnclaveKeySet != nil {
+			if defaultSession.teeEnclaveKeySet != nil {
 				t.Fatal("a refused attestation was cached")
 			}
 		})
@@ -478,12 +480,12 @@ func TestFetchTeeEnclaveKeySetDoesNotCacheFailures(t *testing.T) {
 		trustedSgx(enclavePub)(r)
 		r.Attestation.VerificationStatus = "unverified"
 	})
-	if got := FetchTeeEnclaveKeySet(); got != nil {
+	if got := FetchTeeEnclaveKeySet(context.Background()); got != nil {
 		t.Fatal("an unverified SGX attestation was accepted")
 	}
 
 	srv.set(trustedSgx(enclavePub))
-	got := FetchTeeEnclaveKeySet()
+	got := FetchTeeEnclaveKeySet(context.Background())
 	if got == nil {
 		t.Fatal("a transient attestation failure was cached and bricked later uploads")
 	}
@@ -501,13 +503,13 @@ func TestFetchTeeEnclaveKeySetCachesSuccess(t *testing.T) {
 	srv := newTeeServer(t)
 	srv.set(trustedSgx(enclavePub))
 
-	first := FetchTeeEnclaveKeySet()
+	first := FetchTeeEnclaveKeySet(context.Background())
 	if first == nil {
 		t.Fatal("a trusted attestation was refused")
 	}
 
 	srv.set(func(r *api.TeeAttestationResponse) { r.Success = false })
-	second := FetchTeeEnclaveKeySet()
+	second := FetchTeeEnclaveKeySet(context.Background())
 	if second == nil {
 		t.Fatal("a cached key set was dropped after one bad response")
 	}
@@ -538,7 +540,7 @@ func TestHandleE2EEUploadProducesRecoverableCiphertext(t *testing.T) {
 		t.Fatalf("write source: %v", err)
 	}
 
-	encPath, sealedB64, metaB64, teeSealedB64, hmacHex := HandleE2EEUpload(localPath, func() {
+	encPath, sealedB64, metaB64, teeSealedB64, hmacHex := handleE2EEUpload(localPath, func() {
 		t.Fatal("upload path signalled failure")
 	})
 	if encPath == "" {
@@ -646,7 +648,7 @@ func TestHandleE2EEUploadRefusesAndCleansUpWhenEnclaveUntrusted(t *testing.T) {
 			}
 
 			exits := 0
-			encPath, sealedB64, metaB64, teeSealedB64, hmacHex := HandleE2EEUpload(localPath, func() { exits++ })
+			encPath, sealedB64, metaB64, teeSealedB64, hmacHex := handleE2EEUpload(localPath, func() { exits++ })
 
 			if exits == 0 {
 				t.Fatal("upload never signalled failure to the caller")
@@ -684,7 +686,7 @@ func TestSignEncryptedFileProducesVerifiableSignatures(t *testing.T) {
 		t.Fatalf("write: %v", err)
 	}
 
-	sigEd, sigMl, pkEd, pkMl := SignEncryptedFile(path, func() { t.Fatal("signing signalled failure") })
+	sigEd, sigMl, pkEd, pkMl := signEncryptedFile(path, func() { t.Fatal("signing signalled failure") })
 	for _, field := range []struct{ name, value string }{
 		{"signature_ed25519", sigEd},
 		{"signature_mldsa", sigMl},
@@ -737,7 +739,7 @@ func TestSignEncryptedFileWithoutSigningKeysReturnsNothing(t *testing.T) {
 	f := newKeyFixture(t)
 	f.installEncryptionOnly(t)
 	SetSuppliedPassword(append([]byte(nil), f.password...))
-	if _, priv := GetKeyPair(func() { t.Fatal("unlock failed") }); priv == nil {
+	if _, priv := getKeyPair(func() { t.Fatal("unlock failed") }); priv == nil {
 		t.Fatal("unlock produced no key material")
 	}
 
@@ -747,7 +749,7 @@ func TestSignEncryptedFileWithoutSigningKeysReturnsNothing(t *testing.T) {
 	}
 
 	exits := 0
-	sigEd, sigMl, pkEd, pkMl := SignEncryptedFile(path, func() { exits++ })
+	sigEd, sigMl, pkEd, pkMl := signEncryptedFile(path, func() { exits++ })
 
 	if exits == 0 {
 		t.Fatal("signing without keys never signalled failure to the caller")
@@ -792,7 +794,7 @@ func TestTeeScannerDisabledByServerOnlyOnAnExplicitAnswer(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateKeyEnv(t)
-			teeScannerDisabledByServer = false
+			defaultSession.teeScannerDisabledByServer = false
 			srv := newTeeServer(t)
 			srv.set(func(r *api.TeeAttestationResponse) {
 				trustedSgx(enclavePub)(r)
@@ -802,7 +804,7 @@ func TestTeeScannerDisabledByServerOnlyOnAnExplicitAnswer(t *testing.T) {
 				}
 			})
 
-			FetchTeeEnclaveKeySet()
+			FetchTeeEnclaveKeySet(context.Background())
 			if got := TeeScannerDisabledByServer(); got != tc.wantDisabled {
 				t.Fatalf("disabled verdict = %v, want %v", got, tc.wantDisabled)
 			}

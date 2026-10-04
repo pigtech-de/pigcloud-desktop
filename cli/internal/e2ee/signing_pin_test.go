@@ -193,7 +193,7 @@ func TestSigningPinPersistenceAndOwnerIsolation(t *testing.T) {
 
 	setOwner(t, ownerA)
 	rememberSigningEdPub(pinned)
-	if _, err := os.Stat(signingPksPath()); err != nil {
+	if _, err := os.Stat(ownSigningPins.path()); err != nil {
 		t.Fatalf("pin file not written: %v", err)
 	}
 	if !signingEdPubTrusted(pinned) {
@@ -223,7 +223,7 @@ func TestSigningPinLegacyFlatArray(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(signingPksPath(), raw, 0600); err != nil {
+	if err := os.WriteFile(ownSigningPins.path(), raw, 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -238,7 +238,7 @@ func TestSigningPinLegacyFlatArray(t *testing.T) {
 func TestSigningPinCorruptStore(t *testing.T) {
 	withIsolatedPinStore(t)
 
-	if err := os.WriteFile(signingPksPath(), []byte("}{ not json at all"), 0600); err != nil {
+	if err := os.WriteFile(ownSigningPins.path(), []byte("}{ not json at all"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -351,7 +351,7 @@ func TestVerifyDownloadMissingSignature(t *testing.T) {
 func TestVerifyDownloadCorruptStoreStillVerifies(t *testing.T) {
 	withIsolatedPinStore(t)
 
-	if err := os.WriteFile(signingPksPath(), []byte("garbage-not-json"), 0600); err != nil {
+	if err := os.WriteFile(ownSigningPins.path(), []byte("garbage-not-json"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	pub, priv, err := crypto.GenerateSigningKeyPair()

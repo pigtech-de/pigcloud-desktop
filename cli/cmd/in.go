@@ -39,15 +39,13 @@ func runInfo(targetPath string) {
 	resolvedPath := cmdutil.ResolvePath(targetPath)
 	options := map[string]string{"source": resolvedPath}
 	if e2ee.HasE2EEKeys() {
-		e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 		addChildScope(ctx, options, resolvedPath)
 	}
 	resp, payload := cmdutil.ExecuteCommand[api.InfoPayload](ctx, "in", options, ExitWithError)
 	details := payload.Details
 
-	if details.E2EEDisplayName != "" {
-		details.Name = e2ee.DecryptE2EEName(details.E2EEDisplayName)
-	}
+	details.Name = e2ee.ResolveName(details.E2EEDisplayName, details.Name)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), details) {
 		return

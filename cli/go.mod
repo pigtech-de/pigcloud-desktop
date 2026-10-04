@@ -10,7 +10,7 @@ require (
 	github.com/fatih/color v1.19.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/hanwen/go-fuse/v2 v2.11.0
-	github.com/olekukonko/tablewriter v1.1.4
+	github.com/olekukonko/tablewriter v1.1.5
 	github.com/schollz/progressbar/v3 v3.19.1
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/spf13/cobra v1.10.2
@@ -18,9 +18,10 @@ require (
 	github.com/winfsp/cgofuse v1.6.0
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/crypto v0.57.0
+	golang.org/x/sys v0.48.0
 	golang.org/x/term v0.46.0
 	golang.org/x/text v0.42.0
-	modernc.org/sqlite v1.58.0
+	modernc.org/sqlite v1.59.0
 )
 
 require (
@@ -42,8 +43,13 @@ require (
 	github.com/olekukonko/ll v0.1.6
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec
 	github.com/rivo/uniseg v0.4.7
-	golang.org/x/sys v0.48.0
-	modernc.org/libc v1.75.6
+	golang.org/x/mobile v0.0.0-20260908204917-8b95e45f8d3e
+	golang.org/x/mod v0.41.0
+	golang.org/x/sync v0.23.0
+	golang.org/x/tools v0.50.0
+	modernc.org/libc v1.75.7
 	modernc.org/mathutil v1.7.1
 	modernc.org/memory v1.12.1
 )
+
+tool golang.org/x/mobile/cmd/gomobile

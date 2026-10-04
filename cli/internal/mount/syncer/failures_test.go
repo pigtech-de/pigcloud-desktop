@@ -136,6 +136,10 @@ func TestUploadRetryDelay(t *testing.T) {
 		{"429 no header", rateLimited(0), 1, 15 * time.Second},
 		{"429 no header, third try", rateLimited(0), 3, 45 * time.Second},
 		{"429 daily-ledger window is bounded, not discarded", rateLimited(9 * time.Hour), 1, api.MaxRateLimitDelay},
+		{"429 spent scan budget parks for the whole window", fmt.Errorf("upload: %w", &api.RequestError{
+			Kind: api.KindRateLimited, StatusCode: 429, RetryAfter: 50 * time.Minute,
+			Err: &api.APIError{Code: "rate_limited", Message: "Hourly upload limit reached."},
+		}), 1, 50 * time.Minute},
 		{"503 rides the shared ladder", fmt.Errorf("upload: %w", &api.RequestError{Kind: api.KindTransient, StatusCode: 503, Err: errors.New("scanner unavailable")}), 1, 30 * time.Second},
 		{"transport error, second try", errors.New("connection reset"), 2, 60 * time.Second},
 	}

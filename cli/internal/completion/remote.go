@@ -66,7 +66,7 @@ func RemotePathCompletion(cmd *cobra.Command, args []string, toComplete string) 
 	var completions []string
 	for _, entry := range entries {
 		name := entry.Name
-		if name == "" || name == "(encrypted)" {
+		if e2ee.IsNameUnavailable(name) {
 			continue
 		}
 		if prefix != "" && !strings.HasPrefix(strings.ToLower(name), strings.ToLower(prefix)) {
@@ -122,8 +122,7 @@ func getDirectoryListing(dirPath string) []api.ListEntry {
 				paths = append(paths, parent)
 			}
 		}
-		noExit := func() {}
-		canonical, legacy := e2ee.ComputePathTokenMaps(paths, noExit)
+		canonical, legacy, _ := e2ee.ComputePathTokenMaps(paths)
 		if canonical != "" {
 			options["path_tokens"] = canonical
 		}
@@ -148,9 +147,7 @@ func getDirectoryListing(dirPath string) []api.ListEntry {
 
 	for i := range payload.Entries {
 		entry := &payload.Entries[i]
-		if entry.E2EEDisplayName != "" {
-			entry.Name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-		}
+		entry.Name = e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
 	}
 
 	cache[dirPath] = cacheEntry{
@@ -162,13 +159,12 @@ func getDirectoryListing(dirPath string) []api.ListEntry {
 }
 
 func addCompletionScope(options map[string]string, dirPath string) {
-	noExit := func() {}
-	_, priv := e2ee.GetKeyPair(noExit)
-	if priv == nil {
+	_, priv, err := e2ee.GetKeyPair()
+	if err != nil || priv == nil {
 		return
 	}
-	parentKey := e2ee.GetParentKey(noExit)
-	if parentKey == nil {
+	parentKey, err := e2ee.GetParentKey()
+	if err != nil || parentKey == nil {
 		return
 	}
 	built, err := tree.Load(context.Background(), api.NewClient(), tree.Keys{Priv: priv, ParentKey: parentKey})

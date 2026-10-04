@@ -12,18 +12,38 @@ import (
 )
 
 var (
-	lsLong        bool
-	lsRecursive   bool
-	lsSortSize    bool
-	lsSortTime    bool
-	lsAll         bool
-	lsLimit       int
-	lsOffset      int
-	lsLargerThan  string
-	lsSmallerThan string
-	lsNewerThan   string
-	lsOlderThan   string
+	lsLong      bool
+	lsRecursive bool
+	lsSortSize  bool
+	lsSortTime  bool
+	lsAll       bool
+	lsLimit     int
+	lsOffset    int
+	lsFilters   sizeDateFilters
 )
+
+var sizeDateFlags = [...]struct{ name, usage string }{
+	{"larger-than", "only files larger than SIZE (e.g. 500K, 100M, 2G)"},
+	{"smaller-than", "only files smaller than SIZE"},
+	{"newer-than", "only items modified on or after DATE (YYYY-MM-DD)"},
+	{"older-than", "only items modified before DATE (YYYY-MM-DD)"},
+}
+
+type sizeDateFilters [len(sizeDateFlags)]string
+
+func (f *sizeDateFilters) register(cmd *cobra.Command) {
+	for i, flag := range sizeDateFlags {
+		cmd.Flags().StringVar(&f[i], flag.name, "", flag.usage)
+	}
+}
+
+func (f *sizeDateFilters) apply(options map[string]string) {
+	for i, flag := range sizeDateFlags {
+		if f[i] != "" {
+			options[flag.name] = f[i]
+		}
+	}
+}
 
 var lsCmd = &cobra.Command{
 	Use:     "ls [path]",
@@ -61,10 +81,7 @@ func init() {
 	lsCmd.Flags().BoolVarP(&lsAll, "all", "a", false, "show hidden files")
 	lsCmd.Flags().IntVarP(&lsLimit, "limit", "n", 0, "maximum number of items to show")
 	lsCmd.Flags().IntVarP(&lsOffset, "offset", "o", 0, "number of items to skip")
-	lsCmd.Flags().StringVar(&lsLargerThan, "larger-than", "", "only files larger than SIZE (e.g. 500K, 100M, 2G)")
-	lsCmd.Flags().StringVar(&lsSmallerThan, "smaller-than", "", "only files smaller than SIZE")
-	lsCmd.Flags().StringVar(&lsNewerThan, "newer-than", "", "only items modified on or after DATE (YYYY-MM-DD)")
-	lsCmd.Flags().StringVar(&lsOlderThan, "older-than", "", "only items modified before DATE (YYYY-MM-DD)")
+	lsFilters.register(lsCmd)
 }
 
 func runLs(targetPath string) {
@@ -93,17 +110,10 @@ func runLs(targetPath string) {
 	if lsOffset > 0 {
 		options["offset"] = fmt.Sprintf("%d", lsOffset)
 	}
-	for opt, val := range map[string]string{
-		"larger-than": lsLargerThan, "smaller-than": lsSmallerThan,
-		"newer-than": lsNewerThan, "older-than": lsOlderThan,
-	} {
-		if val != "" {
-			options[opt] = val
-		}
-	}
+	lsFilters.apply(options)
 
 	if e2ee.HasE2EEKeys() {
-		e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+		cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 		if lsRecursive {
 			addRecursiveListingScope(ctx, options, resolvedPath, lsAll)
 		} else {
@@ -115,11 +125,9 @@ func runLs(targetPath string) {
 
 	for i := range payload.Entries {
 		entry := &payload.Entries[i]
-		if entry.E2EEDisplayName != "" {
-			entry.Name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-			if entry.Type == "directory" {
-				entry.Path = "/" + entry.Name
-			}
+		entry.Name = e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
+		if entry.E2EEDisplayName != "" && entry.Type == "directory" {
+			entry.Path = "/" + entry.Name
 		}
 	}
 

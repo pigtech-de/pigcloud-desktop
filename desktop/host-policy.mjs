@@ -1,7 +1,13 @@
 export const CLOUD_ORIGIN = 'https://pigcloud.de';
 export const CLOUD_URL = `${CLOUD_ORIGIN}/cloud/`;
 export const OFFLINE_URL = 'pigcloud-app://settings/index.html';
-export const UPDATE_URL = 'https://pigcloud.de/cli/';
+export const UPDATE_OWNER = 'pigtech-de';
+export const UPDATE_REPOSITORY = 'pigcloud-desktop';
+export const RELEASE_URL = `https://github.com/${UPDATE_OWNER}/${UPDATE_REPOSITORY}/releases/latest`;
+export const UPDATE_FEED = Object.freeze({
+    provider: 'github', owner: UPDATE_OWNER, repo: UPDATE_REPOSITORY,
+    protocol: 'https', private: false, publishAutoUpdate: true,
+});
 export const ACCOUNT_URL = 'https://pigcloud.de/cloud/#!settings/connected-accounts';
 export const IPC_PREFIX = 'pigcloud:sync:';
 export const CHANGE_CHANNEL = `${IPC_PREFIX}changed`;

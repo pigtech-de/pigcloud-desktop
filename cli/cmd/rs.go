@@ -90,7 +90,7 @@ func runRestore(arg string) {
 
 	var rootParentKey []byte
 	if rsToRoot {
-		rootParentKey = e2ee.GetParentKey(ExitWithError)
+		rootParentKey = cmdutil.GetParentKey(ExitWithError)
 	}
 	options := restoreOptions(nodeID, rsToRoot, rootParentKey)
 
@@ -111,7 +111,7 @@ func runRestore(arg string) {
 				output.PrintInfo("Cancelled")
 				return
 			}
-			options = restoreOptions(nodeID, true, e2ee.GetParentKey(ExitWithError))
+			options = restoreOptions(nodeID, true, cmdutil.GetParentKey(ExitWithError))
 			resp, err = client.Execute(ctx, "rs", options)
 			if err != nil {
 				output.PrintError("Request failed: " + err.Error())
@@ -168,10 +168,7 @@ func resolveTrashPath(ctx context.Context, input string) string {
 	var matches []candidate
 	for i := range payload.Items {
 		item := &payload.Items[i]
-		name := item.Name
-		if item.E2EEDisplayName != "" {
-			name = e2ee.DecryptE2EEName(item.E2EEDisplayName)
-		}
+		name := e2ee.ResolveName(item.E2EEDisplayName, item.Name)
 		if name == target {
 			matches = append(matches, candidate{
 				name: name, nodeID: item.NodeID,

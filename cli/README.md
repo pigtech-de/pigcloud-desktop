@@ -18,4 +18,4 @@ Command-line access to PigCloud storage, sharing and local encryption.
 - [Help](https://pigcloud.de/help/)
 - [Report an issue](https://github.com/pigtech-de/pigcloud-issues/issues)
 - [Source license](LICENSE)
-- [Binary terms](https://pigtech.de/terms/)
+- [Binary terms](https://pigcloud.de/terms/)

@@ -1,9 +1,13 @@
 package e2ee
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -54,13 +58,13 @@ func serveEnclaveKeys(t *testing.T, answer *atomic.Pointer[attestationAnswer]) {
 }
 
 func fetchFresh() *crypto.PublicKeySet {
-	cachedTeeEnclaveKeySet = nil
-	return FetchTeeEnclaveKeySet()
+	defaultSession.teeEnclaveKeySet = nil
+	return FetchTeeEnclaveKeySet(context.Background())
 }
 
 func TestEnclaveKeyFetchRefusesSgxToNoneDowngrade(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	x := randKey(t, 32)
 	var answer atomic.Pointer[attestationAnswer]
 	first := sgxTrusted(x, "aa11")
@@ -81,9 +85,40 @@ func TestEnclaveKeyFetchRefusesSgxToNoneDowngrade(t *testing.T) {
 	}
 }
 
+func TestEnclaveKeyFetchRefusesAnSgxKeySwapUnderThePinnedMrenclave(t *testing.T) {
+	withIsolatedPinStore(t)
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	var answer atomic.Pointer[attestationAnswer]
+	first := sgxTrusted(randKey(t, 32), "aa11")
+	answer.Store(&first)
+	serveEnclaveKeys(t, &answer)
+	if fetchFresh() == nil {
+		t.Fatalf("first contact refused: %v", TeeEnclaveKeyRefusal())
+	}
+	if fetchFresh() == nil {
+		t.Fatalf("the pinned SGX key was refused on the second fetch: %v", TeeEnclaveKeyRefusal())
+	}
+
+	swapped := sgxTrusted(randKey(t, 32), "aa11")
+	answer.Store(&swapped)
+	if fetchFresh() != nil {
+		t.Fatal("a new sealing key under the pinned MRENCLAVE was accepted on the server's unverified word")
+	}
+	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
+		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
+	}
+
+	kyberSwapped := first
+	kyberSwapped.kyber = randKey(t, crypto.KyberPublicKeySize)
+	answer.Store(&kyberSwapped)
+	if fetchFresh() != nil {
+		t.Fatal("a swapped ML-KEM half under the pinned X25519 key was accepted")
+	}
+}
+
 func TestEnclaveKeyFetchRefusesMrenclaveChange(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
 	first := sgxTrusted(randKey(t, 32), "aa11")
 	answer.Store(&first)
@@ -92,13 +127,8 @@ func TestEnclaveKeyFetchRefusesMrenclaveChange(t *testing.T) {
 		t.Fatalf("first contact refused: %v", TeeEnclaveKeyRefusal())
 	}
 
-	restarted := sgxTrusted(randKey(t, 32), "aa11")
-	answer.Store(&restarted)
-	if fetchFresh() == nil {
-		t.Fatalf("an enclave restart under the pinned MRENCLAVE was refused: %v", TeeEnclaveKeyRefusal())
-	}
-
-	rebuilt := sgxTrusted(randKey(t, 32), "bb22")
+	rebuilt := first
+	rebuilt.mrenclave = "bb22"
 	answer.Store(&rebuilt)
 	if fetchFresh() != nil {
 		t.Fatal("a different MRENCLAVE was accepted without operator action")
@@ -110,7 +140,7 @@ func TestEnclaveKeyFetchRefusesMrenclaveChange(t *testing.T) {
 
 func TestEnclaveKeyFetchPinsNonSgxSealingKey(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	x := randKey(t, 32)
 	var answer atomic.Pointer[attestationAnswer]
 	first := nonSgx(x)
@@ -131,38 +161,81 @@ func TestEnclaveKeyFetchPinsNonSgxSealingKey(t *testing.T) {
 	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
 		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
 	}
-	if !strings.Contains(TeeEnclaveKeyRefusal().Error(), teeSigningPksPath()) {
+	if !strings.Contains(TeeEnclaveKeyRefusal().Error(), teeSigningPins.path()) {
 		t.Fatalf("refusal does not name the sidecar to delete: %v", TeeEnclaveKeyRefusal())
 	}
 }
 
-func TestEnclaveKeyFetchAllowsNonSgxToSgxUpgrade(t *testing.T) {
+func TestEnclaveKeyFetchRefusesANoneToSgxFlip(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
-	first := nonSgx(randKey(t, 32))
+	x := randKey(t, 32)
+	first := nonSgx(x)
 	answer.Store(&first)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
 		t.Fatalf("non-SGX first contact refused: %v", TeeEnclaveKeyRefusal())
 	}
 
-	upgraded := sgxTrusted(randKey(t, 32), "aa11")
-	answer.Store(&upgraded)
+	for _, claim := range []attestationAnswer{sgxTrusted(randKey(t, 32), "aa11"), sgxTrusted(x, "aa11")} {
+		answer.Store(&claim)
+		if fetchFresh() != nil {
+			t.Fatal("a reply claiming a trusted SGX quote moved a non-SGX pin; this client never verifies quotes")
+		}
+		if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_attestation_mode_changed") {
+			t.Fatalf("refusal reason = %v, want tee_attestation_mode_changed", err)
+		}
+	}
+	if p := mustPinnedPosture(t); p == nil || p.Mode != "none" || p.SealingPk != b64(x) {
+		t.Fatalf("a refused flip rewrote the pin: %+v", p)
+	}
+}
+
+func TestEnclaveKeyFetchRefusesALegacySgxPinThatHoldsNoKeys(t *testing.T) {
+	withIsolatedPinStore(t)
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid", Mrenclave: "aa11"})
+	var answer atomic.Pointer[attestationAnswer]
+	served := sgxTrusted(randKey(t, 32), "aa11")
+	answer.Store(&served)
+	serveEnclaveKeys(t, &answer)
+	if fetchFresh() != nil {
+		t.Fatal("an SGX pin with no sealing key accepted whatever key the server named")
+	}
+	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
+		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
+	}
+}
+
+func TestEnclaveKeyFetchCompletesALegacyNonSgxPinWithItsMlKemHalf(t *testing.T) {
+	withIsolatedPinStore(t)
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	x := randKey(t, 32)
+	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: b64(x)})
+	var answer atomic.Pointer[attestationAnswer]
+	served := nonSgx(x)
+	served.kyber = randKey(t, crypto.KyberPublicKeySize)
+	answer.Store(&served)
+	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
-		t.Fatalf("a move to trusted SGX attestation was refused: %v", TeeEnclaveKeyRefusal())
+		t.Fatalf("a legacy pin matching the X25519 half was refused: %v", TeeEnclaveKeyRefusal())
+	}
+	if p := mustPinnedPosture(t); p == nil || p.SealingPkKyber != b64(served.kyber) {
+		t.Fatalf("the ML-KEM half was not added to the legacy pin: %+v", p)
 	}
 
-	back := nonSgx(randKey(t, 32))
-	answer.Store(&back)
+	swapped := served
+	swapped.kyber = randKey(t, crypto.KyberPublicKeySize)
+	answer.Store(&swapped)
 	if fetchFresh() != nil {
-		t.Fatal("the posture did not ratchet after the SGX upgrade")
+		t.Fatal("once completed, the pin still accepted a new ML-KEM half")
 	}
 }
 
 func TestEnclaveKeyFetchPostureIsPerAccount(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
 	first := nonSgx(randKey(t, 32))
 	answer.Store(&first)
@@ -181,7 +254,7 @@ func TestEnclaveKeyFetchPostureIsPerAccount(t *testing.T) {
 
 func TestEnclaveKeyFetchDoesNotPinOnMalformedKeys(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
 	bad := nonSgx(randKey(t, 32))
 	bad.kyber = []byte("short")
@@ -202,7 +275,7 @@ func TestSigningPinAndPostureSurviveEachOthersWriter(t *testing.T) {
 	withIsolatedPinStore(t)
 	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid", Mrenclave: "aa11"})
 	recordTeeSigningPk(b64([]byte("ed")), b64([]byte("ml")))
-	if p := pinnedTeeAttestationPosture(); p == nil || p.Mrenclave != "aa11" {
+	if p := mustPinnedPosture(t); p == nil || p.Mrenclave != "aa11" {
 		t.Fatalf("recording the signing pin dropped the posture: %+v", p)
 	}
 	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: "x"})
@@ -223,7 +296,7 @@ func TestSigningPinAndPostureSurviveEachOthersWriter(t *testing.T) {
 	if _, ok := pinnedTeeSigningPk(); !ok {
 		t.Fatal("concurrent writers lost the signing pin")
 	}
-	if p := pinnedTeeAttestationPosture(); p == nil || p.SealingPk != "x" {
+	if p := mustPinnedPosture(t); p == nil || p.SealingPk != "x" {
 		t.Fatalf("concurrent writers lost the posture: %+v", p)
 	}
 }
@@ -239,7 +312,7 @@ func TestEnclaveKeyFetchNamesAMalformedKeyRatherThanReportingUnreachable(t *test
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			withIsolatedPinStore(t)
-			t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+			t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 			var answer atomic.Pointer[attestationAnswer]
 			served := tc.answer
 			answer.Store(&served)
@@ -261,7 +334,7 @@ func TestEnclaveKeyFetchNamesAMalformedKeyRatherThanReportingUnreachable(t *test
 
 func TestEnclaveKeyFetchLeavesNoRefusalWhenTheServerDoesNotAnswer(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	config.Get().Endpoint = "http://127.0.0.1:1"
 	config.Get().APIKey = "unreachable-test"
 	if fetchFresh() != nil {
@@ -272,18 +345,133 @@ func TestEnclaveKeyFetchLeavesNoRefusalWhenTheServerDoesNotAnswer(t *testing.T) 
 	}
 }
 
-func TestUnknownPostureModeCountsAsUnpinned(t *testing.T) {
+func mustPinnedPosture(t *testing.T) *teeAttestationPosture {
+	t.Helper()
+	p, err := pinnedTeeAttestationPosture()
+	if err != nil {
+		t.Fatalf("pin store unreadable: %v", err)
+	}
+	return p
+}
+
+func TestAnUnusablePinStoreFailsClosedAndIsNeverRewritten(t *testing.T) {
+	x := randKey(t, 32)
+	cases := []struct {
+		name      string
+		wholeFile bool
+		store     func(owner string) string
+	}{
+		{"not JSON", true, func(string) string { return `{"v":1,"owners":` }},
+		{"another format version", true, func(owner string) string {
+			return fmt.Sprintf(`{"v":99,"owners":{%q:{"posture":{"mode":"none","sealing_pk":%q}}}}`, owner, b64(x))
+		}},
+		{"posture with no mode", false, func(owner string) string {
+			return fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"sealing_pk":%q}}}}`, teeSigningPinVersion, owner, b64(x))
+		}},
+		{"posture with an unknown mode", false, func(owner string) string {
+			return fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"mode":"dcap","mrenclave":"zz"}}}}`, teeSigningPinVersion, owner)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			withIsolatedPinStore(t)
+			t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+			path := teeSigningPins.path()
+			original := []byte(tc.store(signingPinOwner()))
+			if err := os.WriteFile(path, original, 0600); err != nil {
+				t.Fatal(err)
+			}
+			var answer atomic.Pointer[attestationAnswer]
+			served := nonSgx(x)
+			answer.Store(&served)
+			serveEnclaveKeys(t, &answer)
+
+			if fetchFresh() != nil {
+				t.Fatal("an unusable pin store was read as no pin and the served key was trusted")
+			}
+			if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_pin_store_unreadable") || !strings.Contains(err.Error(), "pc te repin") {
+				t.Fatalf("refusal = %v, want tee_pin_store_unreadable naming pc te repin", err)
+			}
+			if tc.wholeFile {
+				if _, err := checkTeeSigningPks(b64(randKey(t, 32)), b64(randKey(t, 32))); err == nil || !strings.Contains(err.Error(), "tee_pin_store_unreadable") {
+					t.Fatalf("the download pin check read an unusable store as unpinned: %v", err)
+				}
+				recordTeeSigningPk(b64([]byte("ed")), b64([]byte("ml")))
+				recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: b64(x)})
+			}
+			if got, _ := os.ReadFile(path); !bytes.Equal(got, original) {
+				t.Fatalf("the unusable store was rewritten:\n%s", got)
+			}
+		})
+	}
+}
+
+func TestAMissingPinStoreStillPinsOnFirstContact(t *testing.T) {
 	withIsolatedPinStore(t)
-	t.Cleanup(func() { cachedTeeEnclaveKeySet = nil })
-	recordTeeAttestationPosture(teeAttestationPosture{Mode: "dcap", Mrenclave: "zz"})
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	if _, err := os.Stat(teeSigningPins.path()); !os.IsNotExist(err) {
+		t.Fatalf("fixture expected no pin store yet: %v", err)
+	}
 	var answer atomic.Pointer[attestationAnswer]
-	first := nonSgx(randKey(t, 32))
-	answer.Store(&first)
+	served := nonSgx(randKey(t, 32))
+	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
-		t.Fatalf("a posture mode this build does not know bricked uploads instead of re-pinning: %v", TeeEnclaveKeyRefusal())
+		t.Fatalf("first contact without a pin store was refused: %v", TeeEnclaveKeyRefusal())
 	}
-	if p := pinnedTeeAttestationPosture(); p == nil || p.Mode != "none" {
-		t.Fatalf("the unknown mode was not replaced by the observed posture: %+v", p)
+	if p := mustPinnedPosture(t); p == nil || p.SealingPk != b64(served.x25519) {
+		t.Fatalf("first contact did not pin: %+v", p)
+	}
+}
+
+func TestRepinSetsAnUnusablePinStoreAsideInsteadOfOverwritingIt(t *testing.T) {
+	withIsolatedPinStore(t)
+	path := teeSigningPins.path()
+	original := []byte(`{"v":1,"owners":`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	x := randKey(t, 32)
+	posture, err := postureFor(servedAttestation{Mode: "none", SealingPk: b64(x), SealingPkKyber: b64(make([]byte, crypto.KyberPublicKeySize))})
+	if err != nil {
+		t.Fatal(err)
+	}
+	offer := &TeeAttestationOffer{Ed25519: b64(randKey(t, crypto.Ed25519PKSize)), Mldsa: b64(randKey(t, crypto.Mldsa44PKSize)), posture: posture}
+	if err := RepinTeeSigningPk(offer); err != nil {
+		t.Fatalf("repin over an unusable store failed: %v", err)
+	}
+	if kept, err := os.ReadFile(path + ".unreadable"); err != nil || !bytes.Equal(kept, original) {
+		t.Fatalf("the unusable store was not kept beside the new one: %q, %v", kept, err)
+	}
+	if p := mustPinnedPosture(t); p == nil || p.SealingPk != b64(x) {
+		t.Fatalf("repin did not write the offered posture: %+v", p)
+	}
+}
+
+func TestAdoptingTheMlKemHalfOfALegacyPinSaysSo(t *testing.T) {
+	withIsolatedPinStore(t)
+	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	var notices []string
+	saved := teeNotice
+	teeNotice = func(msg string) { notices = append(notices, msg) }
+	t.Cleanup(func() { teeNotice = saved })
+	x := randKey(t, 32)
+	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: b64(x)})
+	var answer atomic.Pointer[attestationAnswer]
+	served := nonSgx(x)
+	answer.Store(&served)
+	serveEnclaveKeys(t, &answer)
+
+	if fetchFresh() == nil {
+		t.Fatalf("legacy pin refused: %v", TeeEnclaveKeyRefusal())
+	}
+	if len(notices) != 1 || !strings.Contains(notices[0], "post-quantum") || !strings.Contains(notices[0], "pc te repin") {
+		t.Fatalf("notices = %q, want one line naming the post-quantum pin and pc te repin", notices)
+	}
+	if fetchFresh() == nil {
+		t.Fatalf("the completed pin was refused: %v", TeeEnclaveKeyRefusal())
+	}
+	if len(notices) != 1 {
+		t.Fatalf("the notice repeated once the pin held both halves: %q", notices)
 	}
 }

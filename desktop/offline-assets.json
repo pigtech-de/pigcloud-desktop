@@ -15,6 +15,7 @@
   "styles": [
     "global/fontawesome/css/pigcloud-subset.min.css",
     "global/global.css",
-    "global/global-deferred.css"
+    "global/global-deferred.css",
+    "global/auth.css"
   ]
 }

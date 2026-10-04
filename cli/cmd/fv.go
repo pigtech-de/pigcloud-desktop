@@ -92,9 +92,7 @@ func runFavoriteList() {
 
 	for i := range payload.Favorites {
 		fav := &payload.Favorites[i]
-		if fav.E2EEDisplayName != "" {
-			fav.Name = e2ee.DecryptE2EEName(fav.E2EEDisplayName)
-		}
+		fav.Name = e2ee.ResolveName(fav.E2EEDisplayName, fav.Name)
 	}
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {

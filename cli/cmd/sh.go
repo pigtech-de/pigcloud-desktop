@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/completion"
 	"pigcloud/internal/config"
 	"pigcloud/internal/output"
@@ -50,10 +51,7 @@ func init() {
 }
 
 func runShell() {
-	if !config.IsLoggedIn() {
-		output.PrintError("Not logged in. Run 'pigcloud login' first.")
-		os.Exit(1)
-	}
+	cmdutil.RequireLogin(ExitWithError)
 
 	SetShellMode(true)
 	defer SetShellMode(false)

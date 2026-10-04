@@ -1,18 +1,16 @@
 package cmd
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"os"
 	"os/exec"
-	"os/signal"
 	"path"
 	"runtime"
 	"strings"
 
 	"pigcloud/internal/api"
+	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/completion"
 	"pigcloud/internal/config"
 	"pigcloud/internal/e2ee"
@@ -48,10 +46,7 @@ func init() {
 }
 
 func runOpen(targetPath string) {
-	if !config.IsLoggedIn() {
-		output.PrintError("Not logged in. Run 'pigcloud login' first.")
-		ExitWithError()
-	}
+	cmdutil.RequireLogin(ExitWithError)
 
 	if targetPath == "" {
 		targetPath = config.GetCwd()
@@ -82,10 +77,10 @@ func runOpen(targetPath string) {
 }
 
 func resolveNodeID(targetPath string) string {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 	options := map[string]string{"source": targetPath}
-	e2ee.AddPathTokensFor(options, targetPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, targetPath, e2ee.SelfAndParent, ExitWithError)
 	resp, err := api.NewClient().Execute(ctx, "in", options)
 	if err != nil || resp == nil || !resp.Success {
 		return ""

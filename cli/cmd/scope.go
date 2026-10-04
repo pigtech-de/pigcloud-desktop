@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"pigcloud/internal/api"
+	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/e2ee"
 	"pigcloud/internal/tree"
 )
@@ -14,13 +15,13 @@ func loadClientTree(ctx context.Context) *tree.Tree {
 	if !e2ee.HasE2EEKeys() {
 		return nil
 	}
-	_, priv := e2ee.GetKeyPair(ExitWithError)
+	_, priv := cmdutil.GetKeyPair(ExitWithError)
 	if priv == nil {
 		return nil
 	}
 	built, err := tree.Load(ctx, api.NewClient(), tree.Keys{
 		Priv:      priv,
-		ParentKey: e2ee.GetParentKey(ExitWithError),
+		ParentKey: cmdutil.GetParentKey(ExitWithError),
 	})
 	if err != nil {
 		return nil

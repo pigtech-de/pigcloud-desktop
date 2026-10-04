@@ -72,6 +72,11 @@ func runTouch(name, targetDir string) {
 	ctx, cancel := cmdutil.StartAuthed(ExitWithError)
 	defer cancel()
 
+	name = strings.TrimSpace(name)
+	if !strings.Contains(name, ".") {
+		name += ".txt"
+	}
+
 	content := tcContent
 	if content == "" && !term.IsTerminal(int(syscall.Stdin)) {
 		stdinData, err := io.ReadAll(os.Stdin)
@@ -84,8 +89,8 @@ func runTouch(name, targetDir string) {
 
 	resolvedPath := cmdutil.ResolvePath(targetDir)
 
-	pubKey := e2ee.GetPublicKey(ExitWithError)
-	teeKeys := e2ee.FetchTeeEnclaveKeySet()
+	pubKey := cmdutil.GetPublicKey(ExitWithError)
+	teeKeys := e2ee.FetchTeeEnclaveKeySet(ctx)
 	if teeKeys == nil && !e2ee.TeeScannerDisabledByServer() {
 		if refusal := e2ee.TeeEnclaveKeyRefusal(); refusal != nil {
 			output.PrintError("Security scanner refused: " + refusal.Error())
@@ -153,7 +158,7 @@ func runTouch(name, targetDir string) {
 		ExitWithError()
 	}
 
-	sigEd, sigMl, pkEd, pkMl := e2ee.SignEncryptedFile(tmpOutPath, ExitWithError)
+	sigEd, sigMl, pkEd, pkMl := cmdutil.SignEncryptedFile(tmpOutPath, ExitWithError)
 
 	options := map[string]string{
 		"source":             resolvedPath,
@@ -168,7 +173,7 @@ func runTouch(name, targetDir string) {
 		"signing_pk_mldsa":   pkMl,
 	}
 
-	if nameKey := e2ee.GetNameKey(ExitWithError); nameKey != nil {
+	if nameKey := cmdutil.GetNameKey(ExitWithError); nameKey != nil {
 		if hmac, err := crypto.ComputePlaintextHmac(meta.PlaintextSHA256, nameKey); err == nil {
 			options["plaintext_hmac"] = hmac
 		}
@@ -181,9 +186,9 @@ func runTouch(name, targetDir string) {
 	} else {
 		fullNodePath = parentPath + "/" + name
 	}
-	e2ee.AddE2eeNameFields(options, name, fullNodePath, ExitWithError)
+	cmdutil.AddE2eeNameFields(options, name, fullNodePath, ExitWithError)
 
-	e2ee.AddPathTokensForAll(options, []string{fullNodePath, parentPath}, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensForAll(options, []string{fullNodePath, parentPath}, e2ee.SelfAndParent, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.TouchPayload](ctx, "tc", options, ExitWithError)
 

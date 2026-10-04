@@ -261,7 +261,7 @@ func TestPeerPinCorruptSidecarRepins(t *testing.T) {
 	resetFriendCache(t)
 	serveFriendList(t, "bob")
 
-	if err := os.WriteFile(peerSigningPksPath(), []byte("garbage-not-json"), 0600); err != nil {
+	if err := os.WriteFile(peerSigningPins.path(), []byte("garbage-not-json"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	_, ownPriv := signingPair(t)

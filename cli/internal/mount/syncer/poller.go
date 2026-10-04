@@ -2,7 +2,6 @@ package syncer
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -12,6 +11,7 @@ import (
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/crypto"
+	"pigcloud/internal/e2ee"
 	"pigcloud/internal/mount/cache"
 	"pigcloud/internal/mount/mlog"
 	"pigcloud/internal/mount/vfs"
@@ -187,8 +187,8 @@ func (p *Poller) pollRecursive(ctx context.Context, parent *vfs.Node) error {
 	decryptFailed := false
 	for i := range payload.Entries {
 		entry := &payload.Entries[i]
-		name := decryptName(entry.E2EEDisplayName, p.vfs.PrivateKey)
-		if name == "(encrypted)" || (name == "" && entry.E2EEDisplayName != "") {
+		name := e2ee.OpenLocalName(entry.E2EEDisplayName, p.vfs.PrivateKey)
+		if name == e2ee.NameUnavailable {
 			decryptFailed = true
 			continue
 		}
@@ -323,24 +323,6 @@ func (p *Poller) pollRecursive(ctx context.Context, parent *vfs.Node) error {
 	}
 
 	return nil
-}
-
-func decryptName(e2eeB64 string, priv *crypto.PrivateKeySet) string {
-	if e2eeB64 == "" {
-		return ""
-	}
-	sealed, err := base64.StdEncoding.DecodeString(e2eeB64)
-	if err != nil {
-		return "(encrypted)"
-	}
-	name, err := crypto.UnsealDisplayName(sealed, priv)
-	if err != nil {
-		return "(encrypted)"
-	}
-	if !vfs.IsSafeName(name) {
-		return "(encrypted)"
-	}
-	return name
 }
 
 func addPathTokens(options map[string]string, remotePath string, nameKey []byte) {

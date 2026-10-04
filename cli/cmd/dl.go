@@ -10,13 +10,16 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/completion"
 	"pigcloud/internal/crypto"
 	"pigcloud/internal/e2ee"
+	"pigcloud/internal/fsutil"
 	"pigcloud/internal/output"
+	"pigcloud/internal/progress"
 
 	"github.com/spf13/cobra"
 )
@@ -119,9 +122,9 @@ func runDownload(remotePath, localPath string) {
 	}
 
 	dlOpts := map[string]string{}
-	e2ee.AddPathTokensFor(dlOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(dlOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
-	bar := output.NewProgressBar(-1, "Downloading "+fileName)
+	bar := progress.NewBar(-1, "Downloading "+fileName)
 
 	client := api.NewClient()
 	dlResult, err := client.Download(ctx, resolvedPath, localPath, func(received, total int64) {
@@ -172,9 +175,9 @@ func runStdoutDownload(ctx context.Context, resolvedPath string) {
 	defer os.Remove(tmpPath)
 
 	stdoutOpts := map[string]string{}
-	e2ee.AddPathTokensFor(stdoutOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(stdoutOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
-	bar := output.NewProgressBar(-1, "Downloading "+filepath.Base(resolvedPath))
+	bar := progress.NewBar(-1, "Downloading "+filepath.Base(resolvedPath))
 	client := api.NewClient()
 	dlResult, err := client.Download(ctx, resolvedPath, tmpPath, func(received, total int64) {
 		if total > 0 {
@@ -208,7 +211,7 @@ func runExtractDownload(ctx context.Context, resolvedPath, localDir string) {
 		"source": resolvedPath,
 		"depth":  "100",
 	}
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 	_, treeListing := cmdutil.ExecuteCommand[api.TreePayload](ctx, "tr", options, ExitWithError)
 	decryptTreeEntries(treeListing.Entries)
 
@@ -218,6 +221,10 @@ func runExtractDownload(ctx context.Context, resolvedPath, localDir string) {
 	}
 	var files []fileEntry
 	cmdutil.WalkTreeFiles(treeListing.Entries, resolvedPath, func(_ api.TreeEntry, remotePath, relPath string) {
+		if !localRelPathSafe(relPath) {
+			output.PrintWarning("Skipping " + fsutil.StripControl(relPath) + ": not a valid local file name on this system")
+			return
+		}
 		files = append(files, fileEntry{
 			remotePath: remotePath,
 			localPath:  filepath.Join(localDir, filepath.FromSlash(relPath)),
@@ -262,10 +269,10 @@ func runExtractDownload(ctx context.Context, resolvedPath, localDir string) {
 		}
 
 		perFileOpts := map[string]string{}
-		e2ee.AddPathTokensFor(perFileOpts, f.remotePath, e2ee.SelfAndAncestors, ExitWithError)
+		cmdutil.AddPathTokensFor(perFileOpts, f.remotePath, e2ee.SelfAndAncestors, ExitWithError)
 
 		label := fmt.Sprintf("[%d/%d] %s", i+1, len(files), relDisplay)
-		bar := output.NewProgressBar(-1, label)
+		bar := progress.NewBar(-1, label)
 		dlResult, err := client.Download(ctx, f.remotePath, f.localPath, func(received, total int64) {
 			if total > 0 {
 				bar.ChangeMax64(total)
@@ -302,7 +309,7 @@ func runZipDownload(ctx context.Context, resolvedPath, localPath string) {
 		"source": resolvedPath,
 		"depth":  "100",
 	}
-	e2ee.AddPathTokensFor(zipTreeOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(zipTreeOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 	_, treeListing := cmdutil.ExecuteCommand[api.TreePayload](ctx, "tr", zipTreeOpts, ExitWithError)
 	decryptTreeEntries(treeListing.Entries)
 
@@ -372,10 +379,10 @@ func runZipDownload(ctx context.Context, resolvedPath, localPath string) {
 		tmpFile.Close()
 
 		zipFileOpts := map[string]string{}
-		e2ee.AddPathTokensFor(zipFileOpts, f.remotePath, e2ee.SelfAndAncestors, ExitWithError)
+		cmdutil.AddPathTokensFor(zipFileOpts, f.remotePath, e2ee.SelfAndAncestors, ExitWithError)
 
 		label := fmt.Sprintf("[%d/%d] %s", i+1, len(files), f.relPath)
-		bar := output.NewProgressBar(-1, label)
+		bar := progress.NewBar(-1, label)
 
 		dlResult, err := client.Download(ctx, f.remotePath, tmpPath, func(received, total int64) {
 			if total > 0 {
@@ -434,6 +441,15 @@ func runZipDownload(ctx context.Context, resolvedPath, localPath string) {
 	}
 }
 
+func localRelPathSafe(relPath string) bool {
+	for _, seg := range strings.Split(relPath, "/") {
+		if !fsutil.IsSafeName(seg) {
+			return false
+		}
+	}
+	return true
+}
+
 func isZipExtension(path string) bool {
 	ext := filepath.Ext(path)
 	return ext == ".zip" || ext == ".ZIP"
@@ -459,7 +475,7 @@ func decryptDownloadedFile(filePath string, dlResult *api.DownloadResult) {
 		ExitWithError()
 	}
 
-	_, privKey := e2ee.GetKeyPair(ExitWithError)
+	_, privKey := cmdutil.GetKeyPair(ExitWithError)
 
 	sealedKeyBytes, err := base64.StdEncoding.DecodeString(dlResult.SealedKey)
 	if err != nil {

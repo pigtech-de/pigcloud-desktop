@@ -11,7 +11,11 @@ import (
 )
 
 func VerifyDownloadIntegrity(r io.Reader, dlResult *api.DownloadResult) error {
-	ownEdPub, ownMldsaPub := resolveOwnSigningPubsInteractive()
+	return defaultSession.VerifyDownloadIntegrity(r, dlResult)
+}
+
+func (s *Session) VerifyDownloadIntegrity(r io.Reader, dlResult *api.DownloadResult) error {
+	ownEdPub, ownMldsaPub := s.resolveOwnSigningPubs()
 	return verifyDownloadIntegrity(r, dlResult, ownEdPub, ownMldsaPub)
 }
 

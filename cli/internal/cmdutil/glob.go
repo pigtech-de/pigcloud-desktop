@@ -3,8 +3,6 @@ package cmdutil
 import (
 	"context"
 	"encoding/json"
-	"os"
-	"os/signal"
 	"path"
 	"strings"
 
@@ -32,7 +30,7 @@ func ExpandRemoteGlob(ctx context.Context, pattern string, exitFn func()) []Glob
 		output.PrintError("Glob patterns are only supported in the last path segment: " + pattern)
 		exitFn()
 	}
-	if !e2ee.EnsureNamesReadable() {
+	if !EnsureNamesReadable() {
 		exitFn()
 	}
 	matcher, err := CompileMatcher(base, MatchGlob, false)
@@ -42,17 +40,14 @@ func ExpandRemoteGlob(ctx context.Context, pattern string, exitFn func()) []Glob
 	}
 
 	options := map[string]string{"source": parent, "all": "true", "limit": "1000"}
-	e2ee.AddPathTokensFor(options, parent, e2ee.SelfAndParent, exitFn)
+	AddPathTokensFor(options, parent, e2ee.SelfAndParent, exitFn)
 	_, payload := ExecuteCommand[api.ListPayload](ctx, "ls", options, exitFn)
 
 	var matches []GlobMatch
 	for i := range payload.Entries {
 		entry := &payload.Entries[i]
-		name := entry.Name
-		if entry.E2EEDisplayName != "" {
-			name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-		}
-		if name == "" || name == "(encrypted)" || !matcher.MatchString(name) {
+		name := e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
+		if e2ee.IsNameUnavailable(name) || !matcher.MatchString(name) {
 			continue
 		}
 		matches = append(matches, GlobMatch{ID: entry.ID, Name: name, Path: path.Join(parent, name), Type: entry.Type})
@@ -80,8 +75,7 @@ func ExpandPathArgs(ctx context.Context, args []string, exitFn func()) []string 
 }
 
 func ForEachExpandedPath(args []string, fn func(string), exitFn func()) {
-	RequireLogin(exitFn)
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := StartAuthed(exitFn)
 	defer cancel()
 	for _, p := range ExpandPathArgs(ctx, args, exitFn) {
 		fn(p)

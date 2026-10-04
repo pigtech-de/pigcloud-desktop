@@ -76,7 +76,9 @@ window.PigcloudSettingsShell = (() => {
         const focusables = () => Array.from(overlay.querySelectorAll("a[href],button,textarea,input,select,[tabindex]:not([tabindex='-1'])"))
             .filter(el => !el.disabled && !el.closest("[hidden]") && el.getAttribute("aria-hidden") !== "true");
 
-        function selectSection(section) {
+        const isMobile = () => window.matchMedia("(max-width: 640px)").matches;
+
+        function selectSection(section, drill = true) {
             const resolved = options.aliases?.[section] || section;
             const tabs = Array.from(sidebar.querySelectorAll(".settings-nav-item"));
             const available = tabs.filter(tab => !tab.hidden && !tab.disabled).map(tab => tab.dataset.section);
@@ -93,12 +95,16 @@ window.PigcloudSettingsShell = (() => {
             if (storageAvailable) {
                 try { sessionStorage.setItem("pigcloud_settings_tab", target); } catch { storageAvailable = false; }
             }
-            if (opened && window.matchMedia("(max-width: 640px)").matches && !page.classList.contains("is-drilled-in")) {
+            const mobile = opened && isMobile();
+            if (drill && mobile && !page.classList.contains("is-drilled-in")) {
                 page.classList.add("is-drilled-in");
                 window.PigcloudModalHistory?.push("settings-drilled");
             }
             document.dispatchEvent(new CustomEvent(EVT.SETTINGS_SECTION_SHOWN, {detail: {section: target}}));
-            if (opened) window.PigcloudModalHistory?.reflect("settings/" + target);
+            if (opened) {
+                const overview = mobile && !page.classList.contains("is-drilled-in");
+                window.PigcloudModalHistory?.reflect(overview ? "settings" : "settings/" + target);
+            }
         }
 
         function open(args = {}) {
@@ -106,13 +112,14 @@ window.PigcloudSettingsShell = (() => {
             if (!args.section && storageAvailable) {
                 try { section = sessionStorage.getItem("pigcloud_settings_tab") || section; } catch { storageAvailable = false; }
             }
+            const overview = args.mobileOverview === true || (opened && !args.section);
             if (!opened) {
                 opened = true;
                 lastFocus = document.activeElement;
                 overlay.hidden = false;
                 if (overlay.style.display !== "flex") window.PigcloudScrollLock?.lock();
                 overlay.style.display = "flex";
-                window.PigcloudModalHistory?.push("settings");
+                window.PigcloudModalHistory?.push("settings", true, "settings");
                 options.opener?.setAttribute("aria-expanded", "true");
                 options.onOpen?.();
                 focusFrame = requestAnimationFrame(() => {
@@ -122,12 +129,13 @@ window.PigcloudSettingsShell = (() => {
                     else (focusables()[0] || overlay).focus();
                 });
             }
-            selectSection(section);
-            options.onAnchor?.(section, args.anchor);
-            if (args.mobileOverview && window.matchMedia("(max-width: 640px)").matches && page.classList.contains("is-drilled-in")) {
+            const toOverview = overview && isMobile();
+            if (toOverview && page.classList.contains("is-drilled-in")) {
                 page.classList.remove("is-drilled-in");
-                window.PigcloudModalHistory?.pop();
+                window.PigcloudModalHistory?.pop(history.state?.modal !== "settings-drilled");
             }
+            selectSection(section, !toOverview);
+            options.onAnchor?.(section, args.anchor);
         }
 
         function close(skipHistory = false) {

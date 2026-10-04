@@ -6,15 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"pigcloud/internal/api"
-	"pigcloud/internal/config"
-	"pigcloud/internal/fsutil"
 )
 
 type PeerPinError struct {
@@ -35,35 +31,7 @@ const peerSigningPinVersion = 1
 
 const maxPeerNameLen = 64
 
-func peerSigningPksPath() string {
-	dir := config.Dir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "peer_signing_pks.json")
-}
-
-type peerSigningPksFile struct {
-	V      int                          `json:"v"`
-	Owners map[string]map[string]string `json:"owners"`
-}
-
-func loadPeerSigningPkFile() *peerSigningPksFile {
-	empty := &peerSigningPksFile{V: peerSigningPinVersion, Owners: map[string]map[string]string{}}
-	path := peerSigningPksPath()
-	if path == "" {
-		return empty
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return empty
-	}
-	var f peerSigningPksFile
-	if json.Unmarshal(raw, &f) != nil || f.V != peerSigningPinVersion || f.Owners == nil {
-		return empty
-	}
-	return &f
-}
+var peerSigningPins = ownerSidecar[map[string]string]{name: "peer_signing_pks.json", version: peerSigningPinVersion}
 
 func validPeerName(peer string) bool {
 	if peer == "" || len(peer) > maxPeerNameLen {
@@ -82,7 +50,7 @@ func peerSigningPkSeen(peer string) (string, bool) {
 	if owner == "" || !validPeerName(peer) {
 		return "", false
 	}
-	bucket := loadPeerSigningPkFile().Owners[owner]
+	bucket := peerSigningPins.load().Owners[owner]
 	if bucket == nil {
 		return "", false
 	}
@@ -91,22 +59,16 @@ func peerSigningPkSeen(peer string) (string, bool) {
 }
 
 func recordPeerSigningPk(peer, edB64 string) {
-	path := peerSigningPksPath()
 	owner := signingPinOwner()
-	if path == "" || owner == "" || !validPeerName(peer) {
+	if peerSigningPins.path() == "" || owner == "" || !validPeerName(peer) {
 		return
 	}
-	f := loadPeerSigningPkFile()
+	f := peerSigningPins.load()
 	if f.Owners[owner] == nil {
 		f.Owners[owner] = map[string]string{}
 	}
 	f.Owners[owner][peer] = edB64
-	data, err := json.Marshal(f)
-	if err != nil {
-		return
-	}
-	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	_ = fsutil.WriteFileAtomic(path, data, 0600)
+	_ = peerSigningPins.store(f)
 }
 
 func PeerSigningPinCount() int {
@@ -114,7 +76,7 @@ func PeerSigningPinCount() int {
 	if owner == "" {
 		return 0
 	}
-	return len(loadPeerSigningPkFile().Owners[owner])
+	return len(peerSigningPins.load().Owners[owner])
 }
 
 var (

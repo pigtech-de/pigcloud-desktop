@@ -58,7 +58,7 @@ func runVerify(searchPath string) {
 	ctx, cancel := cmdutil.StartAuthed(ExitWithError)
 	defer cancel()
 
-	if !e2ee.EnsureNamesReadable() {
+	if !cmdutil.EnsureNamesReadable() {
 		return
 	}
 
@@ -68,7 +68,7 @@ func runVerify(searchPath string) {
 		"source": resolvedPath,
 		"depth":  "50",
 	}
-	e2ee.AddPathTokensFor(treeOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	cmdutil.AddPathTokensFor(treeOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
 	_, tree := cmdutil.ExecuteCommand[api.TreePayload](ctx, "tr", treeOpts, ExitWithError)
 	decryptTreeEntries(tree.Entries)
 
@@ -99,7 +99,7 @@ func runVerify(searchPath string) {
 		}
 
 		perFileOpts := map[string]string{}
-		e2ee.AddPathTokensFor(perFileOpts, remotePath, e2ee.SelfAndAncestors, ExitWithError)
+		cmdutil.AddPathTokensFor(perFileOpts, remotePath, e2ee.SelfAndAncestors, ExitWithError)
 
 		res := verifyResult{Path: remotePath, Status: "ok"}
 		data, dlResult, err := client.DownloadToMemory(ctx, remotePath, perFileOpts)

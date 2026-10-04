@@ -63,7 +63,7 @@ func runDiskUsage() {
 	for _, f := range payload.Files {
 		fileType := "other"
 		name := e2ee.DecryptE2EEName(f.E2EEDisplayName)
-		if name != "(encrypted)" {
+		if !e2ee.IsNameUnavailable(name) {
 			fileType = classifyByName(name)
 		}
 		cat, ok := buckets[fileType]

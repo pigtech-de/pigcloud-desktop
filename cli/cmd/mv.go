@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -15,6 +16,8 @@ import (
 )
 
 var mvDry bool
+
+var propagateSubtreeNames = cmdutil.PropagateSubtreeNamesAtPath
 
 var mvCmd = &cobra.Command{
 	Use:     "mv <source> <target>",
@@ -69,59 +72,47 @@ func init() {
 }
 
 func runMv(source, target string) {
+	relocate("mv", source, target, mvDry, func(ctx context.Context, landed string, payload api.MovePayload) {
+		if payload.Dry {
+			output.PrintInfo("[dry-run] Would move " + output.PrintPath(payload.Source) + " to " + output.PrintPath(payload.Target))
+			return
+		}
+		if payload.Noop {
+			output.PrintInfo("Source and target are the same, nothing to do")
+			return
+		}
+		propagateSubtreeNames(ctx, landed, ExitWithError)
+		if !GetQuietOutput() {
+			if payload.Count > 0 {
+				output.PrintSuccess(fmt.Sprintf("Moved %d items matching %s to %s", payload.Count, payload.Pattern, output.PrintPath(payload.Target)))
+			} else {
+				output.PrintSuccess("Moved " + output.PrintPath(payload.Source) + " to " + output.PrintPath(payload.Target))
+			}
+		}
+	})
+}
+
+func relocate[T any](command, source, target string, dry bool, done func(ctx context.Context, landed string, payload T)) {
 	ctx, cancel := cmdutil.StartAuthed(ExitWithError)
 	defer cancel()
 
 	resolvedSource := cmdutil.ResolvePath(source)
-	resolvedTarget := cmdutil.ResolvePath(target)
-
-	targetTrailingSlash := strings.HasSuffix(target, "/")
-	effectiveTarget := resolvedTarget
-	if cmdutil.IsExistingDirectory(ctx, resolvedTarget) || targetTrailingSlash {
-		sourceBase := filepath.Base(resolvedSource)
-		if resolvedTarget == "/" {
-			effectiveTarget = "/" + sourceBase
-		} else {
-			effectiveTarget = strings.TrimRight(resolvedTarget, "/") + "/" + sourceBase
-		}
+	landed := cmdutil.ResolvePath(target)
+	if cmdutil.IsExistingDirectory(ctx, landed) || strings.HasSuffix(target, "/") {
+		landed = strings.TrimRight(landed, "/") + "/" + filepath.Base(resolvedSource)
 	}
 
-	options := map[string]string{
-		"source": resolvedSource,
-		"target": effectiveTarget,
-	}
-	if mvDry {
+	options := map[string]string{"source": resolvedSource, "target": landed}
+	if dry {
 		options["dry-run"] = "true"
 	}
+	fullPath, baseName := e2ee.ResolveAndBaseName(landed)
+	cmdutil.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
+	cmdutil.AddPathTokensForAll(options, []string{resolvedSource, landed}, e2ee.SelfAndParent, ExitWithError)
 
-	fullPath, baseName := e2ee.ResolveAndBaseName(effectiveTarget)
-	e2ee.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
-
-	e2ee.AddPathTokensForAll(options, []string{resolvedSource, effectiveTarget}, e2ee.SelfAndParent, ExitWithError)
-
-	_, payload := cmdutil.ExecuteCommand[api.MovePayload](ctx, "mv", options, ExitWithError)
-
+	_, payload := cmdutil.ExecuteCommand[T](ctx, command, options, ExitWithError)
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
 	}
-
-	if payload.Dry {
-		output.PrintInfo("[dry-run] Would move " + output.PrintPath(payload.Source) + " to " + output.PrintPath(payload.Target))
-		return
-	}
-
-	if payload.Noop {
-		output.PrintInfo("Source and target are the same, nothing to do")
-		return
-	}
-
-	e2ee.PropagateSubtreeNamesAtPath(ctx, effectiveTarget, ExitWithError)
-
-	if !GetQuietOutput() {
-		if payload.Count > 0 {
-			output.PrintSuccess(fmt.Sprintf("Moved %d items matching %s to %s", payload.Count, payload.Pattern, output.PrintPath(payload.Target)))
-		} else {
-			output.PrintSuccess("Moved " + output.PrintPath(payload.Source) + " to " + output.PrintPath(payload.Target))
-		}
-	}
+	done(ctx, landed, payload)
 }

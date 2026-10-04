@@ -313,7 +313,7 @@ func TestPeerSealPinRefusesOnAnUnreadableSidecar(t *testing.T) {
 			if err := PinPeerSealKey("alice", alice.signedBundle(t)); err != nil {
 				t.Fatalf("first pin: %v", err)
 			}
-			if err := os.WriteFile(peerSealPksPath(), []byte(tc.body), 0600); err != nil {
+			if err := os.WriteFile(peerSealPins.path(), []byte(tc.body), 0600); err != nil {
 				t.Fatal(err)
 			}
 
@@ -324,10 +324,10 @@ func TestPeerSealPinRefusesOnAnUnreadableSidecar(t *testing.T) {
 			if !IsSealPinFailure(err) || !strings.Contains(err.Error(), "peer_seal_pk_store_unusable") {
 				t.Fatalf("want a peer_seal_pk_store_unusable failure, got %v", err)
 			}
-			if !strings.Contains(err.Error(), peerSealPksPath()) {
+			if !strings.Contains(err.Error(), peerSealPins.path()) {
 				t.Errorf("refusal does not name the file to move aside: %v", err)
 			}
-			raw, readErr := os.ReadFile(peerSealPksPath())
+			raw, readErr := os.ReadFile(peerSealPins.path())
 			if readErr != nil || string(raw) != tc.body {
 				t.Errorf("the unreadable store was overwritten: %q (%v)", raw, readErr)
 			}
@@ -340,7 +340,7 @@ func TestPeerSealPinRefusesOnAnUnreadableSidecar(t *testing.T) {
 
 func TestPeerSealPinRefusesWhenTheStoreCannotBeWritten(t *testing.T) {
 	withIsolatedPinStore(t)
-	dir := filepath.Dir(peerSealPksPath())
+	dir := filepath.Dir(peerSealPins.path())
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatal(err)
 	}

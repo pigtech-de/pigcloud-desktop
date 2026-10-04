@@ -41,7 +41,7 @@ func runCd(targetPath string) {
 	options := map[string]string{
 		"source": resolvedPath,
 	}
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	client := api.NewClient()
 	resp, err := client.Execute(ctx, "cd", options)

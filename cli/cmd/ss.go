@@ -1,10 +1,6 @@
 package cmd
 
 import (
-	"context"
-	"os"
-	"os/signal"
-
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/output"
@@ -125,7 +121,7 @@ func runSessionRevokeAll() {
 		return
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	resp, _ := cmdutil.ExecuteCommand[any](ctx, "ss", map[string]string{

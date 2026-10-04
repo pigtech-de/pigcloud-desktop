@@ -10,6 +10,17 @@ import (
 
 type NameResolver func(sealedB64 string) string
 
+const NameUnavailable = "(encrypted)"
+
+func (resolve NameResolver) name(sealedB64 string) string {
+	if resolve != nil {
+		if plain := resolve(sealedB64); plain != "" {
+			return plain
+		}
+	}
+	return NameUnavailable
+}
+
 type DisplayBlock struct {
 	Type    string            `json:"type"`
 	Text    string            `json:"text,omitempty"`
@@ -102,13 +113,7 @@ func renderTree(w io.Writer, nodes []DisplayTreeNode, prefix string, resolveName
 			connector = "└── "
 			childPrefix = prefix + "    "
 		}
-		name := "(encrypted)"
-		if resolveName != nil {
-			if plain := resolveName(n.Name); plain != "" {
-				name = plain
-			}
-		}
-		fmt.Fprintf(w, "%s%s%s\n", prefix, connector, FormatType(n.FileType, name))
+		fmt.Fprintf(w, "%s%s%s\n", prefix, connector, FormatType(n.FileType, resolveName.name(n.Name)))
 		if len(n.Children) > 0 {
 			renderTree(w, n.Children, childPrefix, resolveName)
 		}
@@ -144,13 +149,7 @@ func renderKeyValue(w io.Writer, pairs []DisplayPair, resolveName NameResolver) 
 func (c DisplayCell) resolve(resolveName NameResolver) string {
 	switch {
 	case c.Name != "":
-		name := "(encrypted)"
-		if resolveName != nil {
-			if plain := resolveName(c.Name); plain != "" {
-				name = plain
-			}
-		}
-		return FormatType(c.FileType, name)
+		return FormatType(c.FileType, resolveName.name(c.Name))
 	case c.Format != "":
 		return applyStyle(c.Style, formatValue(c.Format, c.Value))
 	default:

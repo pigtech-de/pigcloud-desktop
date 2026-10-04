@@ -36,7 +36,9 @@ type edgeCappedServer struct {
 	finalizeStatus  int
 	finalizePending int
 	finalizeBusy    int
+	finalizeSpent   int
 	finalizeCalls   int
+	finalizeTimes   []time.Time
 	chunkFailIndex int
 	chunkFailBody  string
 
@@ -169,6 +171,14 @@ func (s *edgeCappedServer) serveChunk(w http.ResponseWriter, r *http.Request) {
 		}
 		s.committed = stitched.Bytes()
 		s.finalizeCalls++
+		s.finalizeTimes = append(s.finalizeTimes, time.Now())
+		if s.finalizeSpent > 0 {
+			s.finalizeSpent--
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `{"success":false,"errorCode":"rate_limited","retryAfter":1,"bucket":"tee_scan","error":"Hourly upload limit reached."}`)
+			return
+		}
 		if s.finalizePending > 0 {
 			s.finalizePending--
 			w.WriteHeader(http.StatusAccepted)
@@ -552,6 +562,103 @@ func TestChunkedFinalizeWaitsOutAScannerShed(t *testing.T) {
 			t.Fatalf("a scanner that stays busy is retried later by the caller, not latched: %v", err)
 		}
 	})
+}
+
+func TestSpentScanBudgetPastTheScanWaitReturnsTheHintUnlessTheCallerOptsIn(t *testing.T) {
+	savedSingle, savedChunk, savedWait := uploadSingleBodyMaxBytes, uploadChunkSize, scanPendingMaxWait
+	uploadSingleBodyMaxBytes, uploadChunkSize = 1<<10, 4<<10
+	scanPendingMaxWait = 500 * time.Millisecond
+	defer func() {
+		uploadSingleBodyMaxBytes, uploadChunkSize, scanPendingMaxWait = savedSingle, savedChunk, savedWait
+	}()
+
+	t.Run("a default client hands the wait back to its queue", func(t *testing.T) {
+		fastUploadRetries(t)
+		client, srv := newEdgeCappedServer(t, 0)
+		srv.finalizeSpent = 1
+		localPath, _ := writeRandomFile(t, 16<<10)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		start := time.Now()
+		_, err := client.Upload(ctx, localPath, "/dst", nil, e2eeUploadOpts())
+		if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+			t.Errorf("a serial caller was held %v inside Upload; it must park the item instead", elapsed)
+		}
+		wait, spent := ScanBudgetWait(err)
+		if !spent || wait != time.Second {
+			t.Fatalf("want the spent-budget error carrying the 1s hint, got wait=%v spent=%v err=%v", wait, spent, err)
+		}
+		if srv.finalizeCalls != 1 {
+			t.Errorf("got %d finalizes, want the one refusal and no inline resend", srv.finalizeCalls)
+		}
+	})
+
+	t.Run("pc ul waits the window out on the same session", func(t *testing.T) {
+		fastUploadRetries(t)
+		client, srv := newEdgeCappedServer(t, 0)
+		client.WaitOutScanBudget()
+		srv.finalizeSpent = 1
+		localPath, want := writeRandomFile(t, 16<<10)
+
+		resp, err := client.Upload(context.Background(), localPath, "/dst", nil, e2eeUploadOpts())
+		if err != nil || resp == nil || !resp.Success {
+			t.Fatalf("an opted-in client must sit the window out: resp=%+v err=%v", resp, err)
+		}
+		if ids := srv.distinctChunkIDs(); len(ids) != 1 || !bytes.Equal(srv.committed, want) {
+			t.Errorf("the resend must commit the staged parts of the one session, saw %d sessions", len(ids))
+		}
+	})
+}
+
+func TestParkingClientHandsBackEvenAShortSpentScanBudget(t *testing.T) {
+	savedSingle, savedChunk := uploadSingleBodyMaxBytes, uploadChunkSize
+	uploadSingleBodyMaxBytes, uploadChunkSize = 1<<10, 4<<10
+	defer func() { uploadSingleBodyMaxBytes, uploadChunkSize = savedSingle, savedChunk }()
+	fastUploadRetries(t)
+	client, srv := newEdgeCappedServer(t, 0)
+	client.ParkScanBudget()
+	srv.finalizeSpent = 1
+	localPath, _ := writeRandomFile(t, 16<<10)
+
+	start := time.Now()
+	_, err := client.Upload(context.Background(), localPath, "/dst", nil, e2eeUploadOpts())
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
+		t.Errorf("a parking client sat %v inside Upload on a 1s window", elapsed)
+	}
+	if wait, spent := ScanBudgetWait(err); !spent || wait != time.Second {
+		t.Fatalf("want the spent-budget error carrying the 1s hint, got wait=%v spent=%v err=%v", wait, spent, err)
+	}
+	if srv.finalizeCalls != 1 {
+		t.Errorf("got %d finalizes, want the one refusal and no inline resend", srv.finalizeCalls)
+	}
+}
+
+func TestChunkedFinalizeWaitsOutASpentScanBudgetOnTheSameSession(t *testing.T) {
+	savedSingle, savedChunk := uploadSingleBodyMaxBytes, uploadChunkSize
+	uploadSingleBodyMaxBytes, uploadChunkSize = 1<<10, 4<<10
+	defer func() { uploadSingleBodyMaxBytes, uploadChunkSize = savedSingle, savedChunk }()
+	fastUploadRetries(t)
+	client, srv := newEdgeCappedServer(t, 0)
+	srv.finalizeSpent = 1
+	localPath, want := writeRandomFile(t, 16<<10)
+
+	resp, err := client.Upload(context.Background(), localPath, "/dst", nil, e2eeUploadOpts())
+	if err != nil || resp == nil || !resp.Success {
+		t.Fatalf("a spent scan budget must be waited out on the held session: resp=%+v err=%v", resp, err)
+	}
+	if srv.finalizeCalls != 2 {
+		t.Fatalf("got %d finalizes, want the refused one plus one resend", srv.finalizeCalls)
+	}
+	if gap := srv.finalizeTimes[1].Sub(srv.finalizeTimes[0]); gap < 900*time.Millisecond {
+		t.Errorf("resent the finalize %v after a Retry-After of 1s", gap)
+	}
+	if ids := srv.distinctChunkIDs(); len(ids) != 1 {
+		t.Errorf("a spent budget must not reopen the staging session and re-send every part, saw %d sessions", len(ids))
+	}
+	if !bytes.Equal(srv.committed, want) {
+		t.Errorf("the resent finalize must commit the parts already staged")
+	}
 }
 
 func TestUploadNeverSplicesAcrossAttempts(t *testing.T) {

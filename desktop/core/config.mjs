@@ -6,7 +6,22 @@ import { SyncError, requireObject, requireString } from './errors.mjs';
 
 export const DEFAULT_SETTINGS = Object.freeze({
     pairs: [], poll_interval: 5, launch_on_startup: true, minimize_to_tray: true, pc_path: null,
+    allow_prerelease: false, appearance: null,
 });
+
+const THEME_ID = /^[a-z][a-z0-9-]{0,39}$/u;
+const HEX_COLOR = /^#[0-9a-f]{6}$/iu;
+
+export function validateAppearance(raw) {
+    if (raw === null || raw === undefined) return null;
+    if (typeof raw !== 'object' || Array.isArray(raw)) throw new SyncError('invalidArgument');
+    if (!THEME_ID.test(String(raw.theme))) throw new SyncError('invalidArgument');
+    if (raw.base !== 'light' && raw.base !== 'dark') throw new SyncError('invalidArgument');
+    if (!HEX_COLOR.test(String(raw.background)) || !HEX_COLOR.test(String(raw.surface))) {
+        throw new SyncError('invalidArgument');
+    }
+    return { theme: raw.theme, base: raw.base, background: raw.background.toUpperCase(), surface: raw.surface.toUpperCase() };
+}
 
 export function configDirectory({ platform = process.platform, env = process.env, home = os.homedir() } = {}) {
     return platform === 'win32'
@@ -38,6 +53,14 @@ function validatePair(pair, platform) {
     return { ...pair, remote_path: remote || '/', mount_point: local };
 }
 
+function appearanceOrNull(raw) {
+    try {
+        return validateAppearance(raw);
+    } catch {
+        return null;
+    }
+}
+
 export function validateConfig(raw, platform = process.platform) {
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new SyncError('invalidArgument');
     const config = { ...DEFAULT_SETTINGS, ...raw };
@@ -57,11 +80,20 @@ export function validateConfig(raw, platform = process.platform) {
     }
     if (!Number.isInteger(config.poll_interval)) throw new SyncError('invalidArgument');
     config.poll_interval = Math.max(5, Math.min(3600, config.poll_interval));
-    for (const field of ['launch_on_startup', 'minimize_to_tray']) {
+    for (const field of ['launch_on_startup', 'minimize_to_tray', 'allow_prerelease']) {
         if (typeof config[field] !== 'boolean') throw new SyncError('invalidArgument');
     }
     if (config.pc_path !== null) requireString(config.pc_path);
+    config.appearance = appearanceOrNull(config.appearance);
     return config;
+}
+
+export async function readAppearance({ directory = configDirectory(), io = fs } = {}) {
+    try {
+        return validateAppearance(JSON.parse(await io.readFile(path.join(directory, 'sync.json'), 'utf8')).appearance);
+    } catch {
+        return null;
+    }
 }
 
 export class ConfigStore {
@@ -99,10 +131,7 @@ export class ConfigStore {
         return { revision: this.revision, config: structuredClone(this.current), notice: this.notice };
     }
 
-    async save(candidate, revision) {
-        if (revision !== this.revision) throw new SyncError('staleSettings');
-        if (!this.writable) throw new SyncError('configUnreadable');
-        const next = validateConfig(candidate, this.platform);
+    async write(next) {
         const temp = `${this.file}.${randomUUID()}.tmp`;
         let handle;
         try {
@@ -119,13 +148,27 @@ export class ConfigStore {
             throw new SyncError('saveFailed');
         }
         this.current = next;
+    }
+
+    async save(candidate, revision) {
+        if (revision !== this.revision) throw new SyncError('staleSettings');
+        if (!this.writable) throw new SyncError('configUnreadable');
+        await this.write(validateConfig(candidate, this.platform));
         this.revision++;
         this.notice = null;
         return this.snapshot();
     }
 
+    async saveAppearance(appearance) {
+        const next = validateAppearance(appearance);
+        if (!this.writable) throw new SyncError('configUnreadable');
+        if (JSON.stringify(this.current.appearance) === JSON.stringify(next)) return next;
+        await this.write({ ...structuredClone(this.current), appearance: next });
+        return next;
+    }
+
     candidate(settings) {
-        requireObject(settings, ['revision', 'pairs', 'pollInterval', 'launchOnStartup', 'minimizeToTray']);
+        requireObject(settings, ['revision', 'pairs', 'pollInterval', 'launchOnStartup', 'minimizeToTray', 'allowPrerelease']);
         if (!Array.isArray(settings.pairs)) throw new SyncError('invalidArgument');
         const next = structuredClone(this.current);
         next.pairs = settings.pairs.map(pair => {
@@ -138,6 +181,7 @@ export class ConfigStore {
         next.poll_interval = settings.pollInterval;
         next.launch_on_startup = settings.launchOnStartup;
         next.minimize_to_tray = settings.minimizeToTray;
+        next.allow_prerelease = settings.allowPrerelease ?? next.allow_prerelease ?? false;
         return validateConfig(next, this.platform);
     }
 }

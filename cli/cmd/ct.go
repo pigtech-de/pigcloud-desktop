@@ -63,7 +63,7 @@ func runCt(targetPath string) {
 		options["tail"] = strconv.Itoa(ctTail)
 	}
 
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.CatPayload](ctx, "ct", options, ExitWithError)
 
@@ -102,7 +102,7 @@ func decryptCatContent(payload api.CatPayload) string {
 		ExitWithError()
 	}
 
-	_, privKey := e2ee.GetKeyPair(ExitWithError)
+	_, privKey := cmdutil.GetKeyPair(ExitWithError)
 
 	sealedKeyBytes, err := base64.StdEncoding.DecodeString(payload.SealedKey)
 	if err != nil {

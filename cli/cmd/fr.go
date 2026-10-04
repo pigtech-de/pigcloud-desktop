@@ -22,7 +22,10 @@ var frCmd = &cobra.Command{
   pc fr accept alice        # Accept a friend request
   pc fr decline alice       # Decline a friend request
   pc fr rm alice            # Remove a friend
-  pc fr pending             # List pending friend requests`,
+  pc fr pending             # List pending friend requests
+  pc fr block alice         # Block a user
+  pc fr unblock alice       # Unblock a user
+  pc fr blocked             # List the users you blocked`,
 	Args: cobra.NoArgs,
 	Run: func(cmd *cobra.Command, args []string) {
 		runFriendList()
@@ -74,6 +77,36 @@ var frPendingCmd = &cobra.Command{
 	},
 }
 
+var frBlockCmd = &cobra.Command{
+	Use:   "block <username>",
+	Short: "Block a user",
+	Long: `Block a user. Blocking ends any friendship and every share between you, and
+the user can no longer message you, send you friend requests or share files
+with you. Their messages are hidden from you, and they are not told.`,
+	Args: cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		runFriendRespond(args[0], "block")
+	},
+}
+
+var frUnblockCmd = &cobra.Command{
+	Use:   "unblock <username>",
+	Short: "Unblock a user (does not restore the friendship)",
+	Args:  cobra.ExactArgs(1),
+	Run: func(cmd *cobra.Command, args []string) {
+		runFriendRespond(args[0], "unblock")
+	},
+}
+
+var frBlockedCmd = &cobra.Command{
+	Use:   "blocked",
+	Short: "List the users you blocked",
+	Args:  cobra.NoArgs,
+	Run: func(cmd *cobra.Command, args []string) {
+		runFriendBlocked()
+	},
+}
+
 var frListCmd = &cobra.Command{
 	Use:   "ls",
 	Short: "List your friends",
@@ -105,7 +138,7 @@ only if both screens agree.`,
 
 func init() {
 	frRepinCmd.Flags().BoolVarP(&frRepinForce, "force", "f", false, "skip the confirmation prompt")
-	frCmd.AddCommand(frListCmd, frAddCmd, frAcceptCmd, frDeclineCmd, frRmCmd, frPendingCmd, frRepinCmd)
+	frCmd.AddCommand(frListCmd, frAddCmd, frAcceptCmd, frDeclineCmd, frRmCmd, frPendingCmd, frRepinCmd, frBlockCmd, frUnblockCmd, frBlockedCmd)
 	rootCmd.AddCommand(frCmd)
 }
 
@@ -215,6 +248,20 @@ func runFriendRepin(username string) {
 		return
 	}
 	output.PrintSuccess("Pinned " + e2ee.FingerprintDisplay(offered.Fingerprint()) + " for " + username)
+}
+
+func runFriendBlocked() {
+	ctx, cancel := cmdutil.StartAuthed(ExitWithError)
+	defer cancel()
+
+	resp, payload := cmdutil.ExecuteCommand[api.FriendBlockedPayload](ctx, "fr", map[string]string{
+		"mode": "blocked",
+	}, ExitWithError)
+
+	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
+		return
+	}
+	cmdutil.RenderServerDisplay(resp)
 }
 
 func runFriendPending() {

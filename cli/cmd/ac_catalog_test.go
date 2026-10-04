@@ -16,7 +16,8 @@ const notifierCatalogPath = "../../private/notify/Notifier.php"
 type catalogEvent struct {
 	key      string
 	cliLabel string
-	alerts   bool
+	inApp    bool
+	onetime  bool
 }
 
 var (
@@ -24,7 +25,7 @@ var (
 	phpString    = regexp.MustCompile(`'(?:[^'\\]|\\.)*'`)
 	catalogEntry = regexp.MustCompile(`^'([a-z0-9_]+)' => \[$`)
 	catalogCLI   = regexp.MustCompile(`^'cli' => '((?:[^'\\]|\\.)*)',$`)
-	catalogAlert = regexp.MustCompile(`^'alert' => (null|\[)`)
+	catalogInApp = regexp.MustCompile(`^'in_app' => (null|\[)`)
 )
 
 func stripANSI(s string) string { return ansiEscape.ReplaceAllString(s, "") }
@@ -69,12 +70,15 @@ func parseNotifierCatalog(t *testing.T) []catalogEvent {
 			if m := catalogCLI.FindStringSubmatch(trimmed); m != nil {
 				cur.cliLabel = m[1]
 			}
+			if trimmed == "'onetime' => true," {
+				cur.onetime = true
+			}
 			if strings.HasPrefix(trimmed, "'channels' => [") {
 				inChannels = true
 			}
 		case depth == 3 && cur != nil && inChannels:
-			if m := catalogAlert.FindStringSubmatch(trimmed); m != nil {
-				cur.alerts = m[1] != "null"
+			if m := catalogInApp.FindStringSubmatch(trimmed); m != nil {
+				cur.inApp = m[1] != "null"
 			}
 		}
 
@@ -120,30 +124,30 @@ func formatEventTypeCases(t *testing.T) []string {
 	return cases
 }
 
-func TestActivityLabelsCoverEveryAlertChannelEvent(t *testing.T) {
+func TestActivityLabelsCoverEveryInAppChannelEvent(t *testing.T) {
 	events := parseNotifierCatalog(t)
 
 	if len(events) < 40 {
 		t.Fatalf("parsed only %d catalog entries from %s; the PHP layout changed and this guard stopped guarding",
 			len(events), notifierCatalogPath)
 	}
-	alerting := 0
+	logging := 0
 	for _, e := range events {
-		if e.alerts {
-			alerting++
+		if e.inApp && !e.onetime {
+			logging++
 		}
 	}
-	if alerting < 30 {
-		t.Fatalf("parsed only %d alert-channel entries out of %d; the channels block layout changed",
-			alerting, len(events))
+	if logging < 30 {
+		t.Fatalf("parsed only %d activity-writing entries out of %d; the channels block layout changed",
+			logging, len(events))
 	}
 
 	for _, e := range events {
-		if !e.alerts {
+		if !e.inApp || e.onetime {
 			continue
 		}
 		if e.cliLabel == "" {
-			t.Errorf("%s: alert-channel event carries no 'cli' label in the catalog", e.key)
+			t.Errorf("%s: in-app event carries no 'cli' label in the catalog", e.key)
 			continue
 		}
 		got := stripANSI(formatEventType(e.key))

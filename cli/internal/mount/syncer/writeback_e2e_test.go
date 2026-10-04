@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"pigcloud/internal/agent"
+	"pigcloud/internal/agentkeys"
 	"pigcloud/internal/api"
 	"pigcloud/internal/config"
 	"pigcloud/internal/e2ee"
@@ -26,11 +28,11 @@ func TestWritebackE2E(t *testing.T) {
 		t.Skip("mount E2E: keys locked — run 'pc uk' first")
 	}
 
-	noop := func() {}
-	pub, priv := e2ee.GetKeyPair(noop)
-	nameKey := e2ee.GetNameKey(noop)
-	signPub, signPriv := e2ee.GetSigningKeysIfAvailable(noop)
-	if pub == nil || priv == nil || nameKey == nil {
+	e2ee.SetDefaultKeyAgent(agentkeys.New())
+	pub, priv, keyErr := e2ee.GetKeyPair()
+	nameKey, nameErr := e2ee.GetNameKey()
+	signPub, signPriv := e2ee.GetSigningKeysIfAvailable()
+	if keyErr != nil || nameErr != nil || pub == nil || priv == nil || nameKey == nil {
 		t.Skip("mount E2E: encryption keys unavailable from the agent")
 	}
 	if signPub == nil || signPriv == nil {
@@ -88,6 +90,16 @@ func TestWritebackE2E(t *testing.T) {
 		t.Fatalf("store put: %v", err)
 	}
 	filePath := testRoot + "/probe.txt"
+	localFile, ok := wb.localPath(filePath)
+	if !ok {
+		t.Fatalf("no local path for /%s", filePath)
+	}
+	if err := os.MkdirAll(filepath.Dir(localFile), 0o700); err != nil {
+		t.Fatalf("mkdir local: %v", err)
+	}
+	if err := os.WriteFile(localFile, content, 0o600); err != nil {
+		t.Fatalf("write local file (sync mode reads a missing one as deleted mid-upload and trashes the remote): %v", err)
+	}
 	fileID, err := cacheDB.UpsertInode(&cache.Inode{
 		RemotePath:  filePath,
 		DisplayName: "probe.txt",

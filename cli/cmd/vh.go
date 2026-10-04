@@ -1,10 +1,8 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"strings"
 
@@ -13,6 +11,7 @@ import (
 	"pigcloud/internal/completion"
 	"pigcloud/internal/e2ee"
 	"pigcloud/internal/output"
+	"pigcloud/internal/progress"
 
 	"github.com/spf13/cobra"
 )
@@ -130,7 +129,7 @@ func runVersionDelete(versionID string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	_, payload := cmdutil.ExecuteCommand[api.VersionActionPayload](ctx, "vh", map[string]string{
@@ -157,7 +156,7 @@ func runVersionDownload(filePath, versionID, localPath string) {
 		"mode":       "download",
 		"version-id": versionID,
 	}
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	fileName := filepath.Base(resolvedPath)
 	if fileName == "" || fileName == "/" {
@@ -174,7 +173,7 @@ func runVersionDownload(filePath, versionID, localPath string) {
 		localPath = versionedName
 	}
 
-	bar := output.NewProgressBar(-1, "Downloading "+versionedName)
+	bar := progress.NewBar(-1, "Downloading "+versionedName)
 
 	client := api.NewClient()
 	dlResult, err := client.DownloadCommand(ctx, "vh", options, localPath, func(received, total int64) {
@@ -224,7 +223,7 @@ func runVersionPrune(filePath string) {
 		}
 	}
 
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	ctx, cancel := cmdutil.InterruptContext()
 	defer cancel()
 
 	options := map[string]string{
@@ -232,7 +231,7 @@ func runVersionPrune(filePath string) {
 		"mode":   "prune",
 		"keep":   fmt.Sprintf("%d", vhPruneKeep),
 	}
-	e2ee.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
 	_, payload := cmdutil.ExecuteCommand[api.VersionPrunePayload](ctx, "vh", options, ExitWithError)
 

@@ -1,7 +1,7 @@
 package e2ee
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -12,63 +12,66 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
-	"pigcloud/internal/agent"
 	"pigcloud/internal/api"
 	"pigcloud/internal/config"
 	"pigcloud/internal/crypto"
+	"pigcloud/internal/fsutil"
 	"pigcloud/internal/output"
-
-	"golang.org/x/term"
 )
 
-var (
-	cachedPub  *crypto.PublicKeySet
-	cachedPriv *crypto.PrivateKeySet
+type UploadArtifacts struct {
+	EncryptedPath    string
+	SealedKeyB64     string
+	EncMetaB64       string
+	TeeSealedKeyB64  string
+	PlaintextHmacHex string
+	TeeKeySet        *crypto.PublicKeySet
+}
 
-	cachedTeeEnclaveKeySet     *crypto.PublicKeySet
-	teeScannerDisabledByServer bool
-	teeEnclaveKeyRefusal       error
+type UploadSignatures struct {
+	SignatureEd25519B64 string
+	SignatureMldsaB64   string
+	SigningPkEd25519B64 string
+	SigningPkMldsaB64   string
+}
 
-	cachedNameKey []byte
+func (s *Session) KeyPair() (*crypto.PublicKeySet, *crypto.PrivateKeySet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, priv, err := s.keyPairLocked()
+	return clonePublicKeySet(pub), clonePrivateKeySet(priv), err
+}
 
-	cachedParentKey []byte
-
-	cachedSigningPub  *crypto.SigningPublicKeySet
-	cachedSigningPriv *crypto.SigningPrivateKeySet
-)
-
-func GetKeyPair(exitFn func()) (*crypto.PublicKeySet, *crypto.PrivateKeySet) {
+func (s *Session) keyPairLocked() (*crypto.PublicKeySet, *crypto.PrivateKeySet, error) {
+	if s.background {
+		return nil, nil, ErrBackgroundUploadOnly
+	}
 	cfg := config.Get()
 	if cfg.PublicKey == "" || cfg.EncryptedPrivateKey == "" || cfg.PublicKeyKyber == "" || cfg.EncryptedPrivateKeyKyber == "" {
-		output.PrintError("No encryption keys configured. Run 'pc li' to set up encryption.")
-		exitFn()
-		return nil, nil
+		return nil, nil, ErrNoEncryptionKeys
 	}
 
-	if cachedPub != nil && cachedPriv != nil {
-		return cachedPub, cachedPriv
+	if s.pub != nil && s.priv != nil {
+		return s.pub, s.priv, nil
 	}
 
 	pub, err := decodePublicKeySet(cfg)
 	if err != nil {
-		output.PrintError("Invalid public key in config: " + err.Error())
-		exitFn()
-		return nil, nil
+		return nil, nil, fault("Invalid public key in config", err)
 	}
 
-	if keys := agent.RequestKeys(); keys != nil {
+	if keys := s.agentKeys(); keys != nil {
 		priv := &crypto.PrivateKeySet{
 			X25519: keys.PrivateKey,
-			Kyber:  keys.KyberSeed,
+			Kyber:  bytes.Clone(keys.KyberSeed),
 		}
-		cachedPub = pub
-		cachedPriv = priv
-		cachedNameKey = keys.NameKey
-		hydrateSigningFromAgent(keys)
-		return pub, priv
+		s.pub = pub
+		s.priv = priv
+		s.nameKey = bytes.Clone(keys.NameKey)
+		s.hydrateSigningFromAgent(keys)
+		return pub, priv, nil
 	}
 
 	if config.IsDeviceWrapped() {
@@ -76,48 +79,38 @@ func GetKeyPair(exitFn func()) (*crypto.PublicKeySet, *crypto.PrivateKeySet) {
 		if ok && len(deviceKey) == 32 {
 			if enc, derr := decodeEncryptedHybridFromConfig(cfg); derr == nil {
 				if priv, uerr := crypto.DecryptHybridPrivateKeyWithRawKey(enc, deviceKey); uerr == nil {
-					cachedPub = pub
-					cachedPriv = priv
-					hydrateSigningFromConfigWithPDK(cfg, deviceKey)
+					s.pub = pub
+					s.priv = priv
+					s.hydrateSigningFromConfigWithPDK(cfg, deviceKey)
 					for i := range deviceKey {
 						deviceKey[i] = 0
 					}
-					return pub, priv
+					return pub, priv, nil
 				}
 			}
 			for i := range deviceKey {
 				deviceKey[i] = 0
 			}
 		}
-		output.PrintError("Encryption keys unavailable (device keychain locked or reset). Run 'pc login' again.")
-		exitFn()
-		return nil, nil
+		return nil, nil, ErrDeviceKeysLost
 	}
 
 	enc, err := decodeEncryptedHybridFromConfig(cfg)
 	if err != nil {
-		output.PrintError("Invalid encrypted key material in config: " + err.Error())
-		exitFn()
-		return nil, nil
+		return nil, nil, fault("Invalid encrypted key material in config", err)
 	}
 
-	pwBytes, err := readPasswordPrompt()
+	pwBytes, err := s.readPassword()
 	if err != nil {
-		output.PrintError("Failed to read password: " + err.Error())
-		exitFn()
-		return nil, nil
+		return nil, nil, fault("Failed to read password", err)
 	}
 	if pwBytes == nil {
-		output.PrintError("Keys are locked. Run 'pc uk' to unlock.")
-		exitFn()
-		return nil, nil
+		return nil, nil, ErrKeysLocked
 	}
 
 	salt, err := base64.StdEncoding.DecodeString(cfg.KDFSalt)
 	if err != nil {
-		output.PrintError("Invalid KDF salt in config: " + err.Error())
-		exitFn()
-		return nil, nil
+		return nil, nil, fault("Invalid KDF salt in config", err)
 	}
 	pdk := crypto.DeriveKey(pwBytes, salt, cfg.KDFOpsLimit, cfg.KDFMemLimit)
 	for i := range pwBytes {
@@ -131,20 +124,21 @@ func GetKeyPair(exitFn func()) (*crypto.PublicKeySet, *crypto.PrivateKeySet) {
 
 	priv, err := crypto.DecryptHybridPrivateKeyWithRawKey(enc, pdk)
 	if err != nil {
-		output.PrintError("Wrong password")
-		exitFn()
-		return nil, nil
+		return nil, nil, ErrWrongPassword
 	}
 
-	cachedPub = pub
-	cachedPriv = priv
+	s.pub = pub
+	s.priv = priv
 
-	hydrateSigningFromConfigWithPDK(cfg, pdk)
+	s.hydrateSigningFromConfigWithPDK(cfg, pdk)
 
-	return pub, priv
+	return pub, priv, nil
 }
 
-func ImportDeviceTransferredKeys(sealedB64 string, ephPriv *crypto.PrivateKeySet) error {
+func (s *Session) ImportDeviceTransferredKeys(sealedB64 string, ephPriv *crypto.PrivateKeySet) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	sealed, err := base64.StdEncoding.DecodeString(sealedB64)
 	if err != nil {
 		return fmt.Errorf("decode sealed key: %w", err)
@@ -192,7 +186,7 @@ func ImportDeviceTransferredKeys(sealedB64 string, ephPriv *crypto.PrivateKeySet
 	}
 
 	if !config.StoreE2EEDeviceKey(deviceKey) {
-		return fmt.Errorf("no OS keychain available to hold the device key")
+		return ErrNoKeychainForDevice
 	}
 
 	b64 := base64.StdEncoding.EncodeToString
@@ -205,169 +199,133 @@ func ImportDeviceTransferredKeys(sealedB64 string, ephPriv *crypto.PrivateKeySet
 		return err
 	}
 
-	cachedPub = pub
-	cachedPriv = priv
-	cachedSigningPub = signPub
-	cachedSigningPriv = signPriv
+	s.pub = pub
+	s.priv = priv
+	s.signingPub = signPub
+	s.signingPriv = signPriv
 	return nil
 }
 
-func GetPublicKey(exitFn func()) *crypto.PublicKeySet {
-	if cachedPub != nil {
-		return cachedPub
+func (s *Session) PublicKey() (*crypto.PublicKeySet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, err := s.publicKeyLocked()
+	return clonePublicKeySet(pub), err
+}
+
+func (s *Session) publicKeyLocked() (*crypto.PublicKeySet, error) {
+	if s.pub != nil {
+		return s.pub, nil
 	}
 	cfg := config.Get()
 	if cfg.PublicKey == "" || cfg.PublicKeyKyber == "" {
-		output.PrintError("No encryption keys configured. Run 'pc li' to set up encryption.")
-		exitFn()
-		return nil
+		return nil, ErrNoEncryptionKeys
 	}
 	pub, err := decodePublicKeySet(cfg)
 	if err != nil {
-		output.PrintError("Invalid public key in config: " + err.Error())
-		exitFn()
-		return nil
+		return nil, fault("Invalid public key in config", err)
 	}
-	cachedPub = pub
-	return pub
+	s.pub = pub
+	return pub, nil
 }
 
 func HasE2EEKeys() bool {
 	return config.HasEncryptionKeys()
 }
 
-func EnsureKeysFromAgent() bool {
-	if cachedPriv != nil {
+func (s *Session) EnsureKeysFromAgent() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.ensureKeysFromAgentLocked()
+}
+
+func (s *Session) ensureKeysFromAgentLocked() bool {
+	if s.priv != nil {
 		return true
 	}
-	keys := agent.RequestKeys()
+	keys := s.agentKeys()
 	if keys == nil {
 		return false
 	}
-	cachedPriv = &crypto.PrivateKeySet{X25519: keys.PrivateKey, Kyber: keys.KyberSeed}
-	if cachedPub == nil {
-		cachedPub = &crypto.PublicKeySet{X25519: keys.PublicKey, Kyber: keys.KyberPublicKey}
+	s.priv = &crypto.PrivateKeySet{X25519: keys.PrivateKey, Kyber: bytes.Clone(keys.KyberSeed)}
+	if s.pub == nil {
+		s.pub = &crypto.PublicKeySet{X25519: keys.PublicKey, Kyber: bytes.Clone(keys.KyberPublicKey)}
 	}
-	cachedNameKey = keys.NameKey
-	hydrateSigningFromAgent(keys)
+	s.nameKey = bytes.Clone(keys.NameKey)
+	s.hydrateSigningFromAgent(keys)
 	return true
 }
 
-func StartAgentForKeys(pub *crypto.PublicKeySet, priv *crypto.PrivateKeySet, nameKey []byte, signPub *crypto.SigningPublicKeySet, signPriv *crypto.SigningPrivateKeySet, ttl time.Duration) error {
-	agent.Shutdown()
-
-	pubHex := hex.EncodeToString(pub.X25519[:])
-	privHex := hex.EncodeToString(priv.X25519[:])
-	kyberPubHex := hex.EncodeToString(pub.Kyber)
-	kyberSeedHex := hex.EncodeToString(priv.Kyber)
-	nameHex := hex.EncodeToString(nameKey)
-
-	var signPubEdHex, signPrivEdHex, signPubMlHex, signPrivMlHex string
-	if signPub != nil && signPriv != nil {
-		signPubEdHex = hex.EncodeToString(signPub.Ed25519[:])
-		signPrivEdHex = hex.EncodeToString(signPriv.Ed25519)
-		signPubMlHex = hex.EncodeToString(signPub.Mldsa)
-		signPrivMlHex = hex.EncodeToString(signPriv.Mldsa)
+func (s *Session) ClearCachedKey() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.priv != nil {
+		s.priv.Zero()
+		s.priv = nil
 	}
-
-	if err := agent.SpawnBackground(agent.SpawnKeys{
-		PubHex:        pubHex,
-		PrivHex:       privHex,
-		KyberPubHex:   kyberPubHex,
-		KyberSeedHex:  kyberSeedHex,
-		NameKeyHex:    nameHex,
-		SignPubEdHex:  signPubEdHex,
-		SignPrivEdHex: signPrivEdHex,
-		SignPubMlHex:  signPubMlHex,
-		SignPrivMlHex: signPrivMlHex,
-	}, int(ttl.Seconds())); err != nil {
-		return err
+	s.pub = nil
+	for i := range s.nameKey {
+		s.nameKey[i] = 0
 	}
-	for range 10 {
-		time.Sleep(100 * time.Millisecond)
-		if agent.IsRunning() {
-			return nil
-		}
+	s.nameKey = nil
+	for i := range s.parentKey {
+		s.parentKey[i] = 0
 	}
-	return fmt.Errorf("agent did not start")
+	s.parentKey = nil
+	if s.signingPriv != nil {
+		s.signingPriv.Zero()
+		s.signingPriv = nil
+	}
+	s.signingPub = nil
+	s.background = false
 }
 
-func EnsureNamesReadable() bool {
-	if EnsureKeysFromAgent() {
-		return true
-	}
-	if !HasE2EEKeys() {
-		output.PrintWarning("Encryption isn't set up for this account. Finish setup in the web app.")
-		return false
-	}
-	if !term.IsTerminal(int(syscall.Stdin)) {
-		output.PrintWarning("Encryption is locked — file names are hidden. Run 'pc uk' to unlock.")
-		return false
-	}
-	output.PrintInfo("Encryption is locked — unlock to view file names.")
-	pub, priv := GetKeyPair(func() {})
-	if priv == nil {
-		return false
-	}
-	nameKey := GetNameKey(func() {})
-	signPub, signPriv := GetSigningKeysIfAvailable(func() {})
-	if err := StartAgentForKeys(pub, priv, nameKey, signPub, signPriv, time.Hour); err != nil {
-		output.PrintWarning("Unlocked for this command (agent didn't start — run 'pc uk' to persist).")
-	}
-	return true
+func (s *Session) hasKeysLocked() bool {
+	return s.background || HasE2EEKeys()
 }
 
-func ClearCachedKey() {
-	if cachedPriv != nil {
-		cachedPriv.Zero()
-		cachedPriv = nil
-	}
-	cachedPub = nil
-	for i := range cachedNameKey {
-		cachedNameKey[i] = 0
-	}
-	cachedNameKey = nil
-	for i := range cachedParentKey {
-		cachedParentKey[i] = 0
-	}
-	cachedParentKey = nil
-	if cachedSigningPriv != nil {
-		cachedSigningPriv.Zero()
-		cachedSigningPriv = nil
-	}
-	cachedSigningPub = nil
+func (s *Session) SigningKeys() (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, priv, err := s.signingKeysLocked()
+	return cloneSigningPublicKeySet(pub), cloneSigningPrivateKeySet(priv), err
 }
 
-func GetSigningKeys(exitFn func()) (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet) {
-	if cachedSigningPub != nil && cachedSigningPriv != nil {
-		return cachedSigningPub, cachedSigningPriv
+func (s *Session) signingKeysLocked() (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet, error) {
+	if s.signingPub != nil && s.signingPriv != nil {
+		return s.signingPub, s.signingPriv, nil
 	}
 	if !config.HasSigningKeys() {
-		output.PrintError("Signing keys not configured for this account. Open the web app to complete E2EE setup.")
-		exitFn()
-		return nil, nil
+		return nil, nil, ErrNoSigningKeys
 	}
-	GetKeyPair(exitFn)
-	if cachedSigningPub != nil && cachedSigningPriv != nil {
-		return cachedSigningPub, cachedSigningPriv
+	if _, _, err := s.keyPairLocked(); err != nil {
+		return nil, nil, err
 	}
-	output.PrintError("Failed to unlock signing keys. Re-run 'pc uk' to refresh, then retry.")
-	exitFn()
-	return nil, nil
+	if s.signingPub != nil && s.signingPriv != nil {
+		return s.signingPub, s.signingPriv, nil
+	}
+	return nil, nil, ErrSigningUnlockFailed
 }
 
-func GetSigningKeysIfAvailable(exitFn func()) (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet) {
-	if cachedSigningPub != nil && cachedSigningPriv != nil {
-		return cachedSigningPub, cachedSigningPriv
+func (s *Session) SigningKeysIfAvailable() (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pub, priv := s.signingKeysIfAvailableLocked()
+	return cloneSigningPublicKeySet(pub), cloneSigningPrivateKeySet(priv)
+}
+
+func (s *Session) signingKeysIfAvailableLocked() (*crypto.SigningPublicKeySet, *crypto.SigningPrivateKeySet) {
+	if s.signingPub != nil && s.signingPriv != nil {
+		return s.signingPub, s.signingPriv
 	}
 	if !config.HasSigningKeys() {
 		return nil, nil
 	}
-	GetKeyPair(exitFn)
-	return cachedSigningPub, cachedSigningPriv
+	_, _, _ = s.keyPairLocked()
+	return s.signingPub, s.signingPriv
 }
 
-func hydrateSigningFromAgent(keys *agent.KeyMaterial) {
+func (s *Session) hydrateSigningFromAgent(keys *AgentKeys) {
 	if keys == nil || len(keys.SigningPublicKeyEd25519) != crypto.Ed25519PKSize ||
 		len(keys.SigningPrivateKeyEd25519) != crypto.Ed25519SKSize ||
 		len(keys.SigningPublicKeyMldsa) != crypto.Mldsa44PKSize ||
@@ -376,15 +334,15 @@ func hydrateSigningFromAgent(keys *agent.KeyMaterial) {
 	}
 	var edPub [crypto.Ed25519PKSize]byte
 	copy(edPub[:], keys.SigningPublicKeyEd25519)
-	pub := &crypto.SigningPublicKeySet{Ed25519: edPub, Mldsa: keys.SigningPublicKeyMldsa}
+	pub := &crypto.SigningPublicKeySet{Ed25519: edPub, Mldsa: bytes.Clone(keys.SigningPublicKeyMldsa)}
 	edPriv := make([]byte, crypto.Ed25519SKSize)
 	copy(edPriv, keys.SigningPrivateKeyEd25519)
-	priv := &crypto.SigningPrivateKeySet{Ed25519: edPriv, Mldsa: keys.SigningPrivateKeyMldsa}
-	cachedSigningPub = pub
-	cachedSigningPriv = priv
+	priv := &crypto.SigningPrivateKeySet{Ed25519: edPriv, Mldsa: bytes.Clone(keys.SigningPrivateKeyMldsa)}
+	s.signingPub = pub
+	s.signingPriv = priv
 }
 
-func hydrateSigningFromConfigWithPDK(cfg *config.Config, pdk []byte) {
+func (s *Session) hydrateSigningFromConfigWithPDK(cfg *config.Config, pdk []byte) {
 	if !config.HasSigningKeys() {
 		return
 	}
@@ -424,77 +382,176 @@ func hydrateSigningFromConfigWithPDK(cfg *config.Config, pdk []byte) {
 	}
 	var edPub [crypto.Ed25519PKSize]byte
 	copy(edPub[:], pubEdBytes)
-	cachedSigningPub = &crypto.SigningPublicKeySet{Ed25519: edPub, Mldsa: pubMlBytes}
-	cachedSigningPriv = priv
+	s.signingPub = &crypto.SigningPublicKeySet{Ed25519: edPub, Mldsa: pubMlBytes}
+	s.signingPriv = priv
 }
 
-func TeeScannerDisabledByServer() bool {
-	return teeScannerDisabledByServer
+func (s *Session) TeeScannerDisabledByServer() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.teeScannerDisabledByServer
 }
 
-func TeeEnclaveKeyRefusal() error {
-	return teeEnclaveKeyRefusal
+func (s *Session) TeeEnclaveKeyRefusal() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.teeEnclaveKeyRefusal
 }
 
-func FetchTeeEnclaveKeySet() *crypto.PublicKeySet {
-	if cachedTeeEnclaveKeySet != nil {
-		return cachedTeeEnclaveKeySet
+type teeKeysCall struct {
+	done  chan struct{}
+	epoch uint64
+	set   *crypto.PublicKeySet
+}
+
+const teeStaleRecheckGap = 30 * time.Second
+
+var errTeePinOwnerUnknown = errors.New("tee_pin_owner_unknown: no account key set is loaded, so the scanner key the server now offers cannot be checked against this account's pin; the upload was not resent and can be retried once the keys are available")
+
+func (s *Session) FetchTeeEnclaveKeySet(ctx context.Context) *crypto.PublicKeySet {
+	s.mu.Lock()
+	if cached := s.teeEnclaveKeySet; cached != nil {
+		s.mu.Unlock()
+		return cached
 	}
-	teeEnclaveKeyRefusal = nil
+	if call := s.teeKeysFetch; call != nil {
+		s.mu.Unlock()
+		return call.wait(ctx)
+	}
+	call := &teeKeysCall{done: make(chan struct{}), epoch: s.teeKeysEpoch}
+	s.teeKeysFetch = call
+	s.mu.Unlock()
+
+	set, disabled, answered, refusal := probeTeeEnclaveKeySet(ctx)
+
+	s.mu.Lock()
+	if s.teeKeysFetch == call {
+		s.teeKeysFetch = nil
+	}
+	if s.teeKeysEpoch == call.epoch {
+		s.teeEnclaveKeyRefusal = refusal
+		if answered {
+			s.teeScannerDisabledByServer = disabled
+		}
+		if set != nil {
+			s.teeEnclaveKeySet = set
+		}
+	} else {
+		set = nil
+	}
+	call.set = set
+	s.mu.Unlock()
+	close(call.done)
+	return set
+}
+
+func (c *teeKeysCall) wait(ctx context.Context) *crypto.PublicKeySet {
+	select {
+	case <-c.done:
+		return c.set
+	case <-ctx.Done():
+		return nil
+	}
+}
+
+func (s *Session) TeeSealWentStale(ctx context.Context, err error, sealedTo *crypto.PublicKeySet) (bool, error) {
+	if !api.MayBeStaleTeeSeal(err) {
+		return false, nil
+	}
+	s.mu.Lock()
+	if time.Since(s.teeStaleCheckedAt) < teeStaleRecheckGap {
+		current, call := s.teeEnclaveKeySet, s.teeKeysFetch
+		s.mu.Unlock()
+		if current == nil && call != nil {
+			current = call.wait(ctx)
+		}
+		return s.staleSealVerdict(current, sealedTo)
+	}
+	s.teeStaleCheckedAt = time.Now()
+	s.teeEnclaveKeySet = nil
+	s.mu.Unlock()
+
+	return s.staleSealVerdict(s.FetchTeeEnclaveKeySet(ctx), sealedTo)
+}
+
+func (s *Session) staleSealVerdict(fresh, sealedTo *crypto.PublicKeySet) (bool, error) {
+	if fresh == nil {
+		return false, s.TeeEnclaveKeyRefusal()
+	}
+	if signingPinOwner() == "" {
+		return false, errTeePinOwnerUnknown
+	}
+	if !teeKeySetMatchesPin(fresh) {
+		return false, errTeeEnclavePkChanged()
+	}
+	return !sameTeeKeySet(fresh, sealedTo), nil
+}
+
+func sameTeeKeySet(a, b *crypto.PublicKeySet) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.X25519 == b.X25519 && bytes.Equal(a.Kyber, b.Kyber)
+}
+
+func probeTeeEnclaveKeySet(ctx context.Context) (set *crypto.PublicKeySet, disabled, answered bool, refusal error) {
 	client := api.NewClient()
-	resp, err := client.FetchTeeAttestation(context.Background())
+	resp, err := client.FetchTeeAttestation(ctx)
 	if err != nil || resp == nil || !resp.Success {
-		return nil
+		return nil, false, false, nil
 	}
-	teeScannerDisabledByServer = !resp.Enabled
+	answered = true
+	disabled = !resp.Enabled
 	if !resp.Available {
-		return nil
+		return nil, disabled, answered, nil
 	}
 	att := resp.Attestation
 	commit, err := checkTeeAttestationPosture(servedAttestation{
-		Mode:      att.AttestationMode,
-		Mrenclave: att.Mrenclave,
-		Quote:     att.SgxQuote,
-		Status:    att.VerificationStatus,
-		SealingPk: att.EnclavePublicKey,
+		Mode:           att.AttestationMode,
+		Mrenclave:      att.Mrenclave,
+		Quote:          att.SgxQuote,
+		Status:         att.VerificationStatus,
+		SealingPk:      att.EnclavePublicKey,
+		SealingPkKyber: att.EnclavePublicKeyKyber,
 	})
 	if err != nil {
-		teeEnclaveKeyRefusal = err
-		return nil
+		return nil, disabled, answered, err
 	}
 	xBytes, err := base64.StdEncoding.DecodeString(att.EnclavePublicKey)
 	if err != nil || len(xBytes) != 32 {
-		teeEnclaveKeyRefusal = errors.New("tee_enclave_key_malformed: the server answered with an X25519 sealing key that is not 32 bytes")
-		return nil
+		return nil, disabled, answered, errors.New("tee_enclave_key_malformed: the server answered with an X25519 sealing key that is not 32 bytes")
 	}
 	kBytes, err := base64.StdEncoding.DecodeString(att.EnclavePublicKeyKyber)
 	if err != nil || len(kBytes) != crypto.KyberPublicKeySize {
-		teeEnclaveKeyRefusal = errors.New("tee_enclave_key_malformed: the server answered with an ML-KEM sealing key of the wrong size")
-		return nil
+		return nil, disabled, answered, errors.New("tee_enclave_key_malformed: the server answered with an ML-KEM sealing key of the wrong size")
 	}
 	commit()
 	var x [32]byte
 	copy(x[:], xBytes)
-	cachedTeeEnclaveKeySet = &crypto.PublicKeySet{X25519: x, Kyber: kBytes}
-	return cachedTeeEnclaveKeySet
+	return &crypto.PublicKeySet{X25519: x, Kyber: kBytes}, disabled, answered, nil
 }
 
-func GetParentKey(exitFn func()) []byte {
-	if cachedParentKey != nil {
-		return cachedParentKey
+func (s *Session) ParentKey() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	parentKey, err := s.parentKeyLocked()
+	return bytes.Clone(parentKey), err
+}
+
+func (s *Session) parentKeyLocked() ([]byte, error) {
+	if s.parentKey != nil {
+		return s.parentKey, nil
 	}
-	_, priv := GetKeyPair(exitFn)
-	if priv == nil {
-		return nil
+	_, priv, err := s.keyPairLocked()
+	if err != nil {
+		return nil, err
 	}
 	parentKey, err := crypto.DeriveParentKey(priv)
 	if err != nil {
-		output.PrintError("Failed to derive parent key: " + err.Error())
-		exitFn()
-		return nil
+		return nil, fault("Failed to derive parent key", err)
 	}
-	cachedParentKey = parentKey
-	return cachedParentKey
+	s.parentKey = parentKey
+	return s.parentKey, nil
 }
 
 func SealedRootParentB64(nodeIDHex string, parentKey []byte) string {
@@ -509,54 +566,72 @@ func SealedRootParentB64(nodeIDHex string, parentKey []byte) string {
 	return base64.StdEncoding.EncodeToString(blob)
 }
 
-func GetNameKey(exitFn func()) []byte {
-	if cachedNameKey != nil {
-		return cachedNameKey
+func (s *Session) NameKey() ([]byte, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	nameKey, err := s.nameKeyLocked()
+	return bytes.Clone(nameKey), err
+}
+
+func (s *Session) nameKeyLocked() ([]byte, error) {
+	if s.nameKey != nil {
+		return s.nameKey, nil
 	}
-	_, priv := GetKeyPair(exitFn)
-	if priv == nil {
-		return nil
+	_, priv, err := s.keyPairLocked()
+	if err != nil {
+		return nil, err
 	}
 	nameKey, err := crypto.DeriveNameKey(priv)
 	if err != nil {
-		output.PrintError("Failed to derive name key: " + err.Error())
-		exitFn()
-		return nil
+		return nil, fault("Failed to derive name key", err)
 	}
-	cachedNameKey = nameKey
-	return nameKey
+	s.nameKey = nameKey
+	return nameKey, nil
 }
 
-func AddE2eeNameFields(options map[string]string, fileName, fullPath string, exitFn func()) {
-	if !HasE2EEKeys() {
-		return
+func (s *Session) AddE2eeNameFields(options map[string]string, fileName, fullPath string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasKeysLocked() {
+		return nil
 	}
-	pub := GetPublicKey(exitFn)
-	nameKey := GetNameKey(exitFn)
+	pub, err := s.publicKeyLocked()
+	if err != nil {
+		return err
+	}
+	nameKey, err := s.nameKeyLocked()
+	if err != nil {
+		return err
+	}
 
 	sealedName, err := crypto.SealDisplayName(fileName, pub)
 	if err != nil {
-		output.PrintError("Failed to seal display name: " + err.Error())
-		exitFn()
-		return
+		return fault("Failed to seal display name", err)
 	}
 	pathToken, err := crypto.ComputePathToken(nameKey, fullPath)
 	if err != nil {
-		output.PrintError("Failed to compute path token: " + err.Error())
-		exitFn()
-		return
+		return fault("Failed to compute path token", err)
 	}
 
 	options["e2ee_display_name"] = base64.StdEncoding.EncodeToString(sealedName)
 	options["e2ee_path_token"] = hex.EncodeToString(pathToken)
+	return nil
 }
 
-func AddE2eeNameFieldsForMkParents(options map[string]string, pathSegments []string, exitFn func()) {
-	if !HasE2EEKeys() {
-		return
+func (s *Session) AddE2eeNameFieldsForMkParents(options map[string]string, pathSegments []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.hasKeysLocked() {
+		return nil
 	}
-	pub := GetPublicKey(exitFn)
-	nameKey := GetNameKey(exitFn)
+	pub, err := s.publicKeyLocked()
+	if err != nil {
+		return err
+	}
+	nameKey, err := s.nameKeyLocked()
+	if err != nil {
+		return err
+	}
 
 	type segment struct {
 		DisplayName string `json:"e2ee_display_name"`
@@ -591,6 +666,7 @@ func AddE2eeNameFieldsForMkParents(options map[string]string, pathSegments []str
 			options["e2ee_path_segments"] = string(data)
 		}
 	}
+	return nil
 }
 
 func ResolveAndBaseName(resolvedPath string) (fullPath, baseName string) {
@@ -602,59 +678,105 @@ func ResolveAndBaseName(resolvedPath string) (fullPath, baseName string) {
 	return
 }
 
-func DecryptE2EEName(e2eeDisplayNameB64 string) string {
-	if e2eeDisplayNameB64 == "" || !HasE2EEKeys() {
-		return "(encrypted)"
-	}
-	sealed, err := base64.StdEncoding.DecodeString(e2eeDisplayNameB64)
-	if err != nil {
-		return "(encrypted)"
-	}
-	if cachedPriv != nil {
-		name, err := crypto.UnsealDisplayName(sealed, cachedPriv)
-		if err != nil {
-			return "(encrypted)"
-		}
-		return name
-	}
-	if keys := agent.RequestKeys(); keys != nil {
-		priv := &crypto.PrivateKeySet{
-			X25519: keys.PrivateKey,
-			Kyber:  keys.KyberSeed,
-		}
-		cachedPriv = priv
-		if cachedPub == nil {
-			cachedPub = &crypto.PublicKeySet{X25519: keys.PublicKey, Kyber: keys.KyberPublicKey}
-		}
-		cachedNameKey = keys.NameKey
-		name, err := crypto.UnsealDisplayName(sealed, priv)
-		if err != nil {
-			return "(encrypted)"
-		}
-		return name
-	}
-	return "(encrypted)"
+const NameUnavailable = output.NameUnavailable
+
+func IsNameUnavailable(name string) bool {
+	return name == "" || name == NameUnavailable
 }
 
-func ComputePathTokenMaps(paths []string, exitFn func()) (canonicalJSON, legacyJSON string) {
+func OpenDisplayName(sealedB64 string, priv *crypto.PrivateKeySet) string {
+	if sealedB64 == "" {
+		return ""
+	}
+	sealed, err := base64.StdEncoding.DecodeString(sealedB64)
+	if err != nil {
+		return NameUnavailable
+	}
+	name, err := crypto.UnsealDisplayName(sealed, priv)
+	if err != nil || !fsutil.IsDisplaySafeName(name) {
+		return NameUnavailable
+	}
+	return name
+}
+
+func OpenLocalName(sealedB64 string, priv *crypto.PrivateKeySet) string {
+	name := OpenDisplayName(sealedB64, priv)
+	if name != "" && !fsutil.IsSafeName(name) {
+		return NameUnavailable
+	}
+	return name
+}
+
+func ResolveName(sealedB64, fallback string) string {
+	if sealedB64 == "" {
+		return fallback
+	}
+	return DecryptE2EEName(sealedB64)
+}
+
+func (s *Session) DecryptE2EEName(e2eeDisplayNameB64 string) string {
+	if e2eeDisplayNameB64 == "" || !HasE2EEKeys() {
+		return NameUnavailable
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.priv == nil {
+		keys := s.agentKeys()
+		if keys == nil {
+			return NameUnavailable
+		}
+		s.priv = &crypto.PrivateKeySet{
+			X25519: keys.PrivateKey,
+			Kyber:  bytes.Clone(keys.KyberSeed),
+		}
+		if s.pub == nil {
+			s.pub = &crypto.PublicKeySet{X25519: keys.PublicKey, Kyber: bytes.Clone(keys.KyberPublicKey)}
+		}
+		s.nameKey = bytes.Clone(keys.NameKey)
+	}
+	return OpenDisplayName(e2eeDisplayNameB64, s.priv)
+}
+
+func (s *Session) ComputePathTokenMaps(paths []string) (canonicalJSON, legacyJSON string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.computePathTokenMapsLocked(paths)
+}
+
+func (s *Session) computePathTokenMapsLocked(paths []string) (canonicalJSON, legacyJSON string, err error) {
 	if !HasE2EEKeys() || len(paths) == 0 {
-		return "", ""
+		return "", "", nil
 	}
 	cleaned := make([]string, len(paths))
 	for i, p := range paths {
 		cleaned[i] = strings.ReplaceAll(p, "\\", "/")
 	}
-	return crypto.PathTokenOptionJSON(GetNameKey(exitFn), cleaned)
+	nameKey, err := s.nameKeyLocked()
+	if err != nil {
+		return "", "", err
+	}
+	canonicalJSON, legacyJSON = crypto.PathTokenOptionJSON(nameKey, cleaned)
+	return canonicalJSON, legacyJSON, nil
 }
 
-func AddPathTokens(options map[string]string, paths []string, exitFn func()) {
-	canonicalJSON, legacyJSON := ComputePathTokenMaps(paths, exitFn)
+func (s *Session) AddPathTokens(options map[string]string, paths []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.addPathTokensLocked(options, paths)
+}
+
+func (s *Session) addPathTokensLocked(options map[string]string, paths []string) error {
+	canonicalJSON, legacyJSON, err := s.computePathTokenMapsLocked(paths)
+	if err != nil {
+		return err
+	}
 	if canonicalJSON != "" {
 		options["path_tokens"] = canonicalJSON
 	}
 	if legacyJSON != "" {
 		options["path_tokens_legacy"] = legacyJSON
 	}
+	return nil
 }
 
 type Depth = crypto.PathTokenDepth
@@ -665,36 +787,41 @@ const (
 	SelfAndAncestors = crypto.PathTokenSelfAndAncestors
 )
 
-func AddPathTokensFor(options map[string]string, remotePath string, depth Depth, exitFn func()) {
-	AddPathTokensForAll(options, []string{remotePath}, depth, exitFn)
+func (s *Session) AddPathTokensFor(options map[string]string, remotePath string, depth Depth) error {
+	return s.AddPathTokensForAll(options, []string{remotePath}, depth)
 }
 
-func AddPathTokensForAll(options map[string]string, remotePaths []string, depth Depth, exitFn func()) {
+func (s *Session) AddPathTokensForAll(options map[string]string, remotePaths []string, depth Depth) error {
 	if !HasE2EEKeys() {
-		return
+		return nil
 	}
 	var paths []string
 	for _, remotePath := range remotePaths {
 		paths = append(paths, crypto.PathTokenPaths(remotePath, depth)...)
 	}
-	AddPathTokens(options, paths, exitFn)
+	return s.AddPathTokens(options, paths)
 }
 
-func HandleE2EEUpload(localPath string, exitFn func()) (encryptedPath string, sealedKeyB64 string, encMetaB64 string, teeSealedKeyB64 string, plaintextHmacHex string) {
-	pub := GetPublicKey(exitFn)
+func (s *Session) SetSuppliedPassword(pw []byte) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.supplied = pw
+}
+
+func (s *Session) EncryptForUpload(ctx context.Context, localPath string) (*UploadArtifacts, error) {
+	pub, err := s.PublicKey()
+	if err != nil {
+		return nil, err
+	}
 
 	dataKey, err := crypto.GenerateDataKey()
 	if err != nil {
-		output.PrintError("Failed to generate data key: " + err.Error())
-		exitFn()
-		return "", "", "", "", ""
+		return nil, fault("Failed to generate data key", err)
 	}
 
-	tempFile, err := os.CreateTemp("", "pigcloud-e2ee-*")
+	tempFile, err := os.CreateTemp(s.StagingDir(), "pigcloud-e2ee-*")
 	if err != nil {
-		output.PrintError("Failed to create temp file: " + err.Error())
-		exitFn()
-		return "", "", "", "", ""
+		return nil, fault("Failed to create temp file", err)
 	}
 	tempPath := tempFile.Name()
 	tempFile.Close()
@@ -702,82 +829,84 @@ func HandleE2EEUpload(localPath string, exitFn func()) (encryptedPath string, se
 	meta, err := crypto.EncryptFile(localPath, tempPath, dataKey)
 	if err != nil {
 		os.Remove(tempPath)
-		output.PrintError("Failed to encrypt file: " + err.Error())
-		exitFn()
-		return "", "", "", "", ""
+		return nil, fault("Failed to encrypt file", err)
 	}
 
 	sealedKey, err := crypto.SealDataKey(dataKey, pub)
 	if err != nil {
 		os.Remove(tempPath)
-		output.PrintError("Failed to seal data key: " + err.Error())
-		exitFn()
-		return "", "", "", "", ""
+		return nil, fault("Failed to seal data key", err)
 	}
 
 	metaJSON, err := meta.WireJSON()
 	if err != nil {
 		os.Remove(tempPath)
-		output.PrintError("Failed to encode encryption metadata: " + err.Error())
-		exitFn()
-		return "", "", "", "", ""
+		return nil, fault("Failed to encode encryption metadata", err)
 	}
 
-	teeKeys := FetchTeeEnclaveKeySet()
-	if teeKeys == nil && !TeeScannerDisabledByServer() {
+	teeKeys := s.FetchTeeEnclaveKeySet(ctx)
+	if teeKeys == nil && !s.TeeScannerDisabledByServer() {
 		os.Remove(tempPath)
-		if refusal := TeeEnclaveKeyRefusal(); refusal != nil {
-			output.PrintError("Security scanner refused: " + refusal.Error())
-		} else {
-			output.PrintError("Security scanner is not reachable. Please try again shortly.")
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
 		}
-		exitFn()
-		return "", "", "", "", ""
+		if refusal := s.TeeEnclaveKeyRefusal(); refusal != nil {
+			return nil, fault(ErrScannerRefusedUpload.Message, refusal)
+		}
+		return nil, ErrScannerUnreachable
 	}
 	teeSealedB64 := ""
 	if teeKeys != nil {
 		teeSealed, err := crypto.SealDataKey(dataKey, teeKeys)
 		if err != nil {
 			os.Remove(tempPath)
-			output.PrintError("Failed to seal data key to enclave: " + err.Error())
-			exitFn()
-			return "", "", "", "", ""
+			return nil, fault("Failed to seal data key to enclave", err)
 		}
 		teeSealedB64 = base64.StdEncoding.EncodeToString(teeSealed)
 	}
 
 	var hmacHex string
-	if nameKey := GetNameKey(exitFn); nameKey != nil {
+	nameKey, nameErr := s.NameKey()
+	if nameErr != nil {
+		os.Remove(tempPath)
+		return nil, nameErr
+	}
+	if nameKey != nil {
 		if h, err := crypto.ComputePlaintextHmac(meta.PlaintextSHA256, nameKey); err == nil {
 			hmacHex = h
 		}
 	}
 
-	return tempPath, base64.StdEncoding.EncodeToString(sealedKey), base64.StdEncoding.EncodeToString(metaJSON), teeSealedB64, hmacHex
+	return &UploadArtifacts{
+		EncryptedPath:    tempPath,
+		SealedKeyB64:     base64.StdEncoding.EncodeToString(sealedKey),
+		EncMetaB64:       base64.StdEncoding.EncodeToString(metaJSON),
+		TeeSealedKeyB64:  teeSealedB64,
+		PlaintextHmacHex: hmacHex,
+		TeeKeySet:        teeKeys,
+	}, nil
 }
 
-func SignEncryptedFile(encryptedPath string, exitFn func()) (sigEdB64, sigMldsaB64, pkEdB64, pkMldsaB64 string) {
-	signPub, signPriv := GetSigningKeys(exitFn)
-	if signPub == nil || signPriv == nil {
-		return "", "", "", ""
+func (s *Session) SignEncryptedFile(encryptedPath string) (*UploadSignatures, error) {
+	signPub, signPriv, err := s.SigningKeys()
+	if err != nil {
+		return nil, err
 	}
 	f, err := os.Open(encryptedPath)
 	if err != nil {
-		output.PrintError("Failed to open encrypted file for signing: " + err.Error())
-		exitFn()
-		return "", "", "", ""
+		return nil, fault("Failed to open encrypted file for signing", err)
 	}
 	defer f.Close()
 	sigEd, sigMldsa, err := crypto.SignFileBytes(f, signPriv)
 	if err != nil {
-		output.PrintError("Failed to sign encrypted file: " + err.Error())
-		exitFn()
-		return "", "", "", ""
+		return nil, fault("Failed to sign encrypted file", err)
 	}
-	return base64.StdEncoding.EncodeToString(sigEd),
-		base64.StdEncoding.EncodeToString(sigMldsa),
-		base64.StdEncoding.EncodeToString(signPub.Ed25519[:]),
-		base64.StdEncoding.EncodeToString(signPub.Mldsa)
+	return &UploadSignatures{
+		SignatureEd25519B64: base64.StdEncoding.EncodeToString(sigEd),
+		SignatureMldsaB64:   base64.StdEncoding.EncodeToString(sigMldsa),
+		SigningPkEd25519B64: base64.StdEncoding.EncodeToString(signPub.Ed25519[:]),
+		SigningPkMldsaB64:   base64.StdEncoding.EncodeToString(signPub.Mldsa),
+	}, nil
 }
 
 func PropagateNameToShares(ctx context.Context, nodeIDHex, plaintextName string) {
@@ -801,16 +930,16 @@ func PropagateNameToShares(ctx context.Context, nodeIDHex, plaintextName string)
 		if err != nil {
 			continue
 		}
-		_ = client.StoreShareDisplayNames(ctx, r.Username, []api.SealedNameEntry{{
+		_ = client.StoreShareDisplayNames(ctx, r.Username, "", []api.SealedNameEntry{{
 			NodeID:            nodeIDHex,
 			SealedDisplayName: base64.StdEncoding.EncodeToString(sealed),
 		}})
 	}
 }
 
-func PropagateSubtreeNamesAtPath(ctx context.Context, path string, exitFn func()) {
+func (s *Session) PropagateSubtreeNamesAtPath(ctx context.Context, path string) error {
 	if !HasE2EEKeys() {
-		return
+		return nil
 	}
 	client := api.NewClient()
 	keysResp, err := client.Execute(ctx, "e2ee_list_keys", map[string]string{
@@ -819,19 +948,19 @@ func PropagateSubtreeNamesAtPath(ctx context.Context, path string, exitFn func()
 		"include_dirs":  "1",
 	})
 	if err != nil || !keysResp.Success {
-		return
+		return nil
 	}
 	var keysPayload api.E2EEListKeysPayload
 	if err := json.Unmarshal(keysResp.Raw, &keysPayload); err != nil {
-		return
+		return nil
 	}
 	if len(keysPayload.Keys) == 0 {
-		return
+		return nil
 	}
 
-	_, priv := GetKeyPair(exitFn)
-	if priv == nil {
-		return
+	_, priv, err := s.KeyPair()
+	if err != nil {
+		return err
 	}
 
 	pubKeyCache := make(map[string]*crypto.PublicKeySet)
@@ -878,8 +1007,9 @@ func PropagateSubtreeNamesAtPath(ctx context.Context, path string, exitFn func()
 	}
 
 	for username, names := range perRecipient {
-		_ = client.StoreShareDisplayNames(ctx, username, names)
+		_ = client.StoreShareDisplayNames(ctx, username, "", names)
 	}
+	return nil
 }
 
 func decodeRecipient(r api.ShareRecipientWithKey) (*crypto.PublicKeySet, error) {
@@ -945,31 +1075,14 @@ func decodeEncryptedHybridFromConfig(cfg *config.Config) (*crypto.EncryptedHybri
 	}, nil
 }
 
-var suppliedPassword []byte
-
-func SetSuppliedPassword(pw []byte) {
-	suppliedPassword = pw
-}
-
-func readPasswordPrompt() ([]byte, error) {
-	if suppliedPassword != nil {
-		pw := suppliedPassword
-		suppliedPassword = nil
+func (s *Session) readPassword() ([]byte, error) {
+	if s.supplied != nil {
+		pw := s.supplied
+		s.supplied = nil
 		return pw, nil
 	}
-	interactive := term.IsTerminal(int(syscall.Stdin))
-	if interactive {
-		fmt.Print("Password: ")
-		pwBytes, err := term.ReadPassword(int(syscall.Stdin))
-		fmt.Println()
-		return pwBytes, err
+	if s.prompter == nil {
+		return nil, nil
 	}
-	scanner := bufio.NewScanner(os.Stdin)
-	if scanner.Scan() {
-		return []byte(scanner.Text()), nil
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-	return nil, nil
+	return s.prompter.Password()
 }

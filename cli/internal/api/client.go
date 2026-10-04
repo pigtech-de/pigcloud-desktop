@@ -149,7 +149,12 @@ func newTransport(maxIdle int, idleTimeout, responseHeaderTimeout time.Duration)
 var (
 	defaultTransport    = newTransport(10, 90*time.Second, ClientTimeout)
 	validationTransport = newTransport(2, 30*time.Second, KeyValidationTimeout)
+	wrapTransport       = func(rt http.RoundTripper) http.RoundTripper { return rt }
 )
+
+func SetTransportWrapper(wrap func(http.RoundTripper) http.RoundTripper) {
+	wrapTransport = wrap
+}
 
 type Client struct {
 	httpClient *http.Client
@@ -159,6 +164,19 @@ type Client struct {
 
 	sessionMu sync.Mutex
 	session   *webUploadSession
+
+	waitOutScanBudget bool
+	parkScanBudget    bool
+}
+
+func (c *Client) WaitOutScanBudget() *Client {
+	c.waitOutScanBudget = true
+	return c
+}
+
+func (c *Client) ParkScanBudget() *Client {
+	c.parkScanBudget = true
+	return c
 }
 
 type Response struct {
@@ -242,28 +260,14 @@ type StorageState struct {
 }
 
 type DownloadPayload struct {
-	Path           string `json:"path"`
-	Name           string `json:"name"`
-	Encoding       string `json:"encoding"`
-	Size           int64  `json:"size"`
-	Bytes          *int64 `json:"bytes"`
-	Directory      bool   `json:"directory"`
-	Target         string `json:"target,omitempty"`
-	E2EE           bool   `json:"e2ee,omitempty"`
-	SealedKey      string `json:"sealed_key,omitempty"`
-	EncryptionMeta string `json:"encryption_meta,omitempty"`
-
-	SignatureEd25519 string `json:"signature_ed25519,omitempty"`
-	SignatureMldsa   string `json:"signature_mldsa,omitempty"`
-	SigningPkEd25519 string `json:"signing_pk_ed25519,omitempty"`
-	SigningPkMldsa   string `json:"signing_pk_mldsa,omitempty"`
-
-	SignedBy string `json:"signed_by,omitempty"`
-
-	TEESignatureEd25519 string `json:"tee_signature_ed25519,omitempty"`
-	TEESignatureMldsa   string `json:"tee_signature_mldsa,omitempty"`
-	TEESigningPkEd25519 string `json:"tee_signing_pk_ed25519,omitempty"`
-	TEESigningPkMldsa   string `json:"tee_signing_pk_mldsa,omitempty"`
+	Path      string `json:"path"`
+	Name      string `json:"name"`
+	Encoding  string `json:"encoding"`
+	Size      int64  `json:"size"`
+	Bytes     *int64 `json:"bytes"`
+	Directory bool   `json:"directory"`
+	Target    string `json:"target,omitempty"`
+	DownloadResult
 }
 
 type SharePayload struct {
@@ -271,6 +275,7 @@ type SharePayload struct {
 	Username   string `json:"username"`
 	Permission string `json:"permission,omitempty"`
 	Status     string `json:"status"`
+	NodeID     string `json:"nodeId,omitempty"`
 }
 
 type ShareListPayload struct {
@@ -372,41 +377,15 @@ type FindEntry struct {
 }
 
 type CatPayload struct {
-	Path           string `json:"path"`
-	Content        string `json:"content"`
-	Size           int64  `json:"size"`
-	E2EE           bool   `json:"e2ee,omitempty"`
-	SealedKey      string `json:"sealed_key,omitempty"`
-	EncryptionMeta string `json:"encryption_meta,omitempty"`
-
-	SignatureEd25519 string `json:"signature_ed25519,omitempty"`
-	SignatureMldsa   string `json:"signature_mldsa,omitempty"`
-	SigningPkEd25519 string `json:"signing_pk_ed25519,omitempty"`
-	SigningPkMldsa   string `json:"signing_pk_mldsa,omitempty"`
-
-	SignedBy string `json:"signed_by,omitempty"`
-
-	TEESignatureEd25519 string `json:"tee_signature_ed25519,omitempty"`
-	TEESignatureMldsa   string `json:"tee_signature_mldsa,omitempty"`
-	TEESigningPkEd25519 string `json:"tee_signing_pk_ed25519,omitempty"`
-	TEESigningPkMldsa   string `json:"tee_signing_pk_mldsa,omitempty"`
+	Path    string `json:"path"`
+	Content string `json:"content"`
+	Size    int64  `json:"size"`
+	DownloadResult
 }
 
 func (p *CatPayload) AsDownloadResult() *DownloadResult {
-	return &DownloadResult{
-		E2EE:                p.E2EE,
-		SealedKey:           p.SealedKey,
-		EncryptionMeta:      p.EncryptionMeta,
-		SignatureEd25519:    p.SignatureEd25519,
-		SignatureMldsa:      p.SignatureMldsa,
-		SigningPkEd25519:    p.SigningPkEd25519,
-		SigningPkMldsa:      p.SigningPkMldsa,
-		SignedBy:            p.SignedBy,
-		TEESignatureEd25519: p.TEESignatureEd25519,
-		TEESignatureMldsa:   p.TEESignatureMldsa,
-		TEESigningPkEd25519: p.TEESigningPkEd25519,
-		TEESigningPkMldsa:   p.TEESigningPkMldsa,
-	}
+	result := p.DownloadResult
+	return &result
 }
 
 type RestorePayload struct {
@@ -743,6 +722,10 @@ type FriendPendingEntry struct {
 	CreatedAt string `json:"created_at"`
 }
 
+type FriendBlockedPayload struct {
+	Blocked []FriendPendingEntry `json:"blocked"`
+}
+
 type ChatListPayload struct {
 	Conversations []ChatConversation `json:"conversations"`
 }
@@ -777,6 +760,7 @@ type ChatMessage struct {
 	CreatedAt          string  `json:"createdAt"`
 	Deleted            bool    `json:"deleted"`
 	Blocked            bool    `json:"blocked"`
+	SenderBlocked      bool    `json:"senderBlocked"`
 	ShareID            *int    `json:"shareId"`
 	ShareStatus        *string `json:"shareStatus"`
 }
@@ -829,7 +813,7 @@ func NewClient() *Client {
 	}
 	return &Client{
 		httpClient: &http.Client{
-			Transport:     defaultTransport,
+			Transport:     wrapTransport(defaultTransport),
 			CheckRedirect: dropAPIKeyOnHostChange,
 		},
 		timeout:  ClientTimeout,
@@ -841,7 +825,7 @@ func NewClient() *Client {
 func NewClientWithKey(apiKey string) *Client {
 	return &Client{
 		httpClient: &http.Client{
-			Transport:     validationTransport,
+			Transport:     wrapTransport(validationTransport),
 			CheckRedirect: dropAPIKeyOnHostChange,
 		},
 		timeout:  KeyValidationTimeout,
@@ -1098,20 +1082,21 @@ func (c *Client) uploadWholeBody(ctx context.Context, localPath string, progress
 }
 
 type DownloadResult struct {
-	E2EE           bool
-	SealedKey      string
-	EncryptionMeta string
+	E2EE           bool   `json:"e2ee,omitempty"`
+	SealedKey      string `json:"sealed_key,omitempty"`
+	EncryptionMeta string `json:"encryption_meta,omitempty"`
 
-	SignatureEd25519 string
-	SignatureMldsa   string
-	SigningPkEd25519 string
-	SigningPkMldsa   string
-	SignedBy         string
+	SignatureEd25519 string `json:"signature_ed25519,omitempty"`
+	SignatureMldsa   string `json:"signature_mldsa,omitempty"`
+	SigningPkEd25519 string `json:"signing_pk_ed25519,omitempty"`
+	SigningPkMldsa   string `json:"signing_pk_mldsa,omitempty"`
 
-	TEESignatureEd25519 string
-	TEESignatureMldsa   string
-	TEESigningPkEd25519 string
-	TEESigningPkMldsa   string
+	SignedBy string `json:"signed_by,omitempty"`
+
+	TEESignatureEd25519 string `json:"tee_signature_ed25519,omitempty"`
+	TEESignatureMldsa   string `json:"tee_signature_mldsa,omitempty"`
+	TEESigningPkEd25519 string `json:"tee_signing_pk_ed25519,omitempty"`
+	TEESigningPkMldsa   string `json:"tee_signing_pk_mldsa,omitempty"`
 }
 
 func parseDownloadMetadata(metaHeader string) *DownloadResult {
@@ -1127,19 +1112,7 @@ func parseDownloadMetadata(metaHeader string) *DownloadResult {
 	if err := json.Unmarshal(metaBytes, &dlPayload); err != nil {
 		return result
 	}
-	result.E2EE = dlPayload.E2EE
-	result.SealedKey = dlPayload.SealedKey
-	result.EncryptionMeta = dlPayload.EncryptionMeta
-	result.SignatureEd25519 = dlPayload.SignatureEd25519
-	result.SignatureMldsa = dlPayload.SignatureMldsa
-	result.SigningPkEd25519 = dlPayload.SigningPkEd25519
-	result.SigningPkMldsa = dlPayload.SigningPkMldsa
-	result.SignedBy = dlPayload.SignedBy
-	result.TEESignatureEd25519 = dlPayload.TEESignatureEd25519
-	result.TEESignatureMldsa = dlPayload.TEESignatureMldsa
-	result.TEESigningPkEd25519 = dlPayload.TEESigningPkEd25519
-	result.TEESigningPkMldsa = dlPayload.TEESigningPkMldsa
-	return result
+	return &dlPayload.DownloadResult
 }
 
 func downloadRejection(resp *http.Response, body []byte) error {
@@ -1339,19 +1312,46 @@ type SealedNameEntry struct {
 	SealedDisplayName string `json:"sealed_display_name"`
 }
 
-func (c *Client) StoreShareDisplayNames(ctx context.Context, recipientUsername string, names []SealedNameEntry) error {
-	if len(names) == 0 {
-		return nil
+type SealedKeyEntry struct {
+	NodeID    string `json:"node_id"`
+	SealedKey string `json:"sealed_key"`
+}
+
+const ShareRowBatchMax = 5000
+
+func (c *Client) StoreShareDisplayNames(ctx context.Context, recipientUsername, anchorHex string, names []SealedNameEntry) error {
+	return storeShareRows(ctx, c, "store-share-display-names", recipientUsername, anchorHex, "sealedNames", names)
+}
+
+func (c *Client) StoreShareContentKeys(ctx context.Context, recipientUsername string, keys []SealedKeyEntry) error {
+	return storeShareRows(ctx, c, "store-share-content-keys", recipientUsername, "", "sealedKeys", keys)
+}
+
+func storeShareRows[T any](ctx context.Context, c *Client, action, recipientUsername, anchorHex, field string, rows []T) error {
+	for len(rows) > 0 {
+		n := min(len(rows), ShareRowBatchMax)
+		payload := map[string]any{"recipientUsername": recipientUsername, field: rows[:n]}
+		if anchorHex != "" {
+			payload["shareAnchorId"] = anchorHex
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		resp, err := c.postAction(ctx, action, body)
+		if err != nil {
+			return err
+		}
+		var result struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal(resp, &result); err != nil || !result.Success {
+			return fmt.Errorf("action %s refused: %s", action, string(resp))
+		}
+		rows = rows[n:]
 	}
-	body, err := json.Marshal(map[string]any{
-		"recipientUsername": recipientUsername,
-		"sealedNames":       names,
-	})
-	if err != nil {
-		return err
-	}
-	_, err = c.postAction(ctx, "store-share-display-names", body)
-	return err
+	return nil
 }
 
 func (c *Client) postAction(ctx context.Context, action string, body []byte) ([]byte, error) {
@@ -1391,16 +1391,21 @@ type DeviceAuthorizeResult struct {
 }
 
 type DeviceTokenResult struct {
-	Success   bool   `json:"success"`
-	Error     string `json:"error"`
-	APIKey    string `json:"api_key"`
-	SealedKey string `json:"sealed_key"`
+	Success       bool   `json:"success"`
+	Error         string `json:"error"`
+	APIKey        string `json:"api_key"`
+	KeyIdentifier string `json:"key_identifier"`
+	SealedKey     string `json:"sealed_key"`
+	KeyEpoch      int64  `json:"key_epoch"`
 }
 
-func (c *Client) DeviceAuthorize(ctx context.Context, deviceLabel, ephPubkey string) (*DeviceAuthorizeResult, error) {
+func (c *Client) DeviceAuthorize(ctx context.Context, deviceLabel, ephPubkey string, background bool) (*DeviceAuthorizeResult, error) {
 	reqBody := map[string]string{"device_label": deviceLabel}
 	if ephPubkey != "" {
 		reqBody["eph_pubkey"] = ephPubkey
+	}
+	if background {
+		reqBody["background"] = "1"
 	}
 	body, err := json.Marshal(reqBody)
 	if err != nil {
@@ -1415,6 +1420,27 @@ func (c *Client) DeviceAuthorize(ctx context.Context, deviceLabel, ephPubkey str
 		return nil, postErr
 	}
 	return nil, fmt.Errorf("empty device-authorize response")
+}
+
+func (c *Client) RevokeDeviceKey(ctx context.Context, identifier string) error {
+	body, err := json.Marshal(map[string]string{"identifier": identifier})
+	if err != nil {
+		return err
+	}
+	raw, postErr := c.postAction(ctx, "account-revoke-cli-device", body)
+	if postErr != nil {
+		return postErr
+	}
+	var result struct {
+		Success bool `json:"success"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return err
+	}
+	if !result.Success {
+		return fmt.Errorf("device key revoke refused")
+	}
+	return nil
 }
 
 func (c *Client) DeviceToken(ctx context.Context, deviceCode string) (*DeviceTokenResult, error) {
@@ -1508,10 +1534,34 @@ type TeeAttestationResponse struct {
 		SgxQuote                string `json:"sgx_quote"`
 		Mrenclave               string `json:"mrenclave"`
 		VerificationStatus      string `json:"verification_status"`
+		Busy         bool  `json:"busy"`
+		RetryAfterMs int64 `json:"retry_after_ms"`
 	} `json:"attestation"`
 }
 
+var TeeAttestationRetryDelays = []time.Duration{1 * time.Second, 2 * time.Second, 4 * time.Second}
+
+const maxTeeAttestationWait = 30 * time.Second
+
 func (c *Client) FetchTeeAttestation(ctx context.Context) (*TeeAttestationResponse, error) {
+	for attempt := 0; ; attempt++ {
+		result, err := c.fetchTeeAttestationOnce(ctx)
+		if err == nil {
+			return result, nil
+		}
+		if attempt >= len(TeeAttestationRetryDelays) || !(IsTransient(err) || IsRateLimited(err)) || ctx.Err() != nil {
+			return nil, err
+		}
+		delay := max(TeeAttestationRetryDelays[attempt], min(RetryAfterHint(err), maxTeeAttestationWait))
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (c *Client) fetchTeeAttestationOnce(ctx context.Context) (*TeeAttestationResponse, error) {
 	endpoint := c.actionEndpoint("tee-attestation")
 	ctx, cancel := c.requestCtx(ctx)
 	defer cancel()
@@ -1522,16 +1572,58 @@ func (c *Client) FetchTeeAttestation(ctx context.Context) (*TeeAttestationRespon
 	c.setCommonHeaders(req)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		if transportRetryable(err) {
+			return nil, &RequestError{Kind: KindTransient, Err: fmt.Errorf("tee attestation request failed: %w", err)}
+		}
 		return nil, err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, ResponseSizeLimit))
 	if err != nil {
-		return nil, err
+		return nil, &RequestError{Kind: KindTransient, StatusCode: resp.StatusCode, Err: fmt.Errorf("tee attestation read failed: %w", err)}
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return nil, statusError(resp, fmt.Errorf("tee_attestation_unanswered: the server answered the attestation probe with HTTP %d%s", resp.StatusCode, attestationFailureDetail(body)))
 	}
 	var result TeeAttestationResponse
 	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, err
+		return nil, &RequestError{Kind: KindTransient, StatusCode: resp.StatusCode, Err: fmt.Errorf("tee_attestation_unanswered: the attestation reply is not JSON: %w", err)}
+	}
+	if !result.Success {
+		return nil, &RequestError{Kind: KindTransient, StatusCode: resp.StatusCode, Err: fmt.Errorf("tee_attestation_unanswered: the server did not answer the attestation probe%s", attestationFailureDetail(body))}
+	}
+	if result.Available && result.Attestation.Busy {
+		return nil, &RequestError{
+			Kind:       KindTransient,
+			StatusCode: resp.StatusCode,
+			RetryAfter: time.Duration(max(result.Attestation.RetryAfterMs, 0)) * time.Millisecond,
+			Err:        errors.New("tee_attestation_unanswered: the scanner shed the attestation probe as busy"),
+		}
 	}
 	return &result, nil
+}
+
+func attestationFailureDetail(body []byte) string {
+	var reply struct {
+		Error     string `json:"error"`
+		ErrorCode string `json:"errorCode"`
+	}
+	if json.Unmarshal(body, &reply) != nil {
+		return ""
+	}
+	code := reply.ErrorCode
+	if code == "" {
+		code = reply.Error
+	}
+	if code == "" || len(code) > 64 || strings.ContainsAny(code, " \n\r\t") {
+		return ""
+	}
+	return " (" + code + ")"
+}
+
+const StaleTeeSealCode = "scanner_unavailable"
+
+func MayBeStaleTeeSeal(err error) bool {
+	var apiErr *APIError
+	return errors.As(err, &apiErr) && apiErr.Code == StaleTeeSealCode
 }

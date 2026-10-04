@@ -17,6 +17,7 @@ import (
 	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/crypto"
 	"pigcloud/internal/e2ee"
+	"pigcloud/internal/fsutil"
 	"pigcloud/internal/output"
 
 	"github.com/fatih/color"
@@ -144,7 +145,7 @@ func runActivity() {
 
 		typeLabel := formatEventType(event.EventType)
 		detail := formatEventDetail(event.EventType, resolveNodeRefs(event.Detail))
-		timestamp := output.FormatTime(&event.CreatedAt)
+		timestamp := fsutil.StripControl(output.FormatTime(&event.CreatedAt))
 
 		fmt.Printf("%s%-18s %s  %s\n", marker, typeLabel, color.HiBlackString(timestamp), detail)
 	}
@@ -216,7 +217,7 @@ func printFollowEvent(event api.ActivityEvent) {
 	}
 	typeLabel := formatEventType(event.EventType)
 	detail := formatEventDetail(event.EventType, resolveNodeRefs(event.Detail))
-	timestamp := output.FormatTime(&event.CreatedAt)
+	timestamp := fsutil.StripControl(output.FormatTime(&event.CreatedAt))
 	fmt.Printf("%-18s %s  %s\n", typeLabel, color.HiBlackString(timestamp), detail)
 }
 
@@ -342,6 +343,8 @@ func formatEventType(eventType string) string {
 		return color.RedString("Storage read-only")
 	case "storage_purge_notice":
 		return color.RedString("Final storage notice")
+	case "account_dormant_warning":
+		return color.YellowString("Inactive account notice")
 	case "space_stake_retained":
 		return color.YellowString("Space stake held after leaving")
 	case "space_stake_released":
@@ -380,6 +383,12 @@ func formatEventType(eventType string) string {
 		return color.CyanString("Storage expanded")
 	case "expansion_pack_removed":
 		return color.YellowString("Storage expansion removed")
+	case "contract_withdrawal_received":
+		return color.YellowString("Contract withdrawal received")
+	case "contract_withdrawal_refunded":
+		return color.GreenString("Contract withdrawal completed")
+	case "contract_cancellation_received":
+		return color.YellowString("Contract cancellation received")
 	case "friend_request_received":
 		return color.CyanString("Friend request received")
 	case "friend_request_accepted":
@@ -414,8 +423,10 @@ func formatEventType(eventType string) string {
 		return color.CyanString("Platform update")
 	case "admin_report_received":
 		return color.YellowString("Abuse report received")
+	case "legal_update":
+		return color.CyanString("Legal document updated")
 	default:
-		return eventType
+		return fsutil.StripControl(eventType)
 	}
 }
 
@@ -430,7 +441,7 @@ func decryptEventDetail(detail string) string {
 	if err != nil {
 		return detail
 	}
-	_, privKey := e2ee.GetKeyPair(func() {})
+	_, privKey := cmdutil.GetKeyPair(func() {})
 	if privKey == nil {
 		return detail
 	}
@@ -517,11 +528,8 @@ func fetchNodePaths() map[string]string {
 	parentByID := make(map[string]string, len(payload.Results))
 	for i := range payload.Results {
 		entry := &payload.Results[i]
-		name := entry.Name
-		if entry.E2EEDisplayName != "" {
-			name = e2ee.DecryptE2EEName(entry.E2EEDisplayName)
-		}
-		if entry.ID == "" || name == "" || name == "(encrypted)" {
+		name := e2ee.ResolveName(entry.E2EEDisplayName, entry.Name)
+		if entry.ID == "" || e2ee.IsNameUnavailable(name) {
 			continue
 		}
 		id := strings.ToLower(entry.ID)
@@ -555,6 +563,9 @@ func formatEventDetail(eventType, detail string) string {
 		return ""
 	}
 	parts := strings.Split(detail, "\n")
+	for i := range parts {
+		parts[i] = fsutil.StripControl(parts[i])
+	}
 	permSuffix := ""
 	if len(parts) >= 3 && (parts[2] == "edit" || parts[2] == "read") {
 		if parts[2] == "edit" {

@@ -8,16 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"pigcloud/internal/api"
-	"pigcloud/internal/config"
 	"pigcloud/internal/crypto"
-	"pigcloud/internal/fsutil"
+	"pigcloud/internal/output"
 )
 
 const teeSigningPinVersion = 1
@@ -28,13 +27,7 @@ func IsTeeAttestationUnavailable(err error) bool {
 	return errors.Is(err, ErrTeeAttestationUnavailable)
 }
 
-func teeSigningPksPath() string {
-	dir := config.Dir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "tee_signing_pks.json")
-}
+var teeSigningPins = ownerSidecar[teeSigningPk]{name: "tee_signing_pks.json", version: teeSigningPinVersion}
 
 const teeRetiredPkLimit = 8
 
@@ -80,39 +73,51 @@ func TeeSigningKeyFingerprint(edB64, mlB64 string) string {
 }
 
 type teeAttestationPosture struct {
-	Mode      string `json:"mode"`
-	Mrenclave string `json:"mrenclave,omitempty"`
-	SealingPk string `json:"sealing_pk,omitempty"`
+	Mode           string `json:"mode"`
+	Mrenclave      string `json:"mrenclave,omitempty"`
+	SealingPk      string `json:"sealing_pk,omitempty"`
+	SealingPkKyber string `json:"sealing_pk_kyber,omitempty"`
 }
 
-type teeSigningPksFile struct {
-	V int `json:"v"`
-	Owners map[string]teeSigningPk `json:"owners"`
-}
-
-func loadTeeSigningPkFile() *teeSigningPksFile {
-	empty := &teeSigningPksFile{V: teeSigningPinVersion, Owners: map[string]teeSigningPk{}}
-	path := teeSigningPksPath()
+func loadTeeSigningPkFile() (*sidecarFile[teeSigningPk], error) {
+	path := teeSigningPins.path()
 	if path == "" {
-		return empty
+		return teeSigningPins.empty(), nil
 	}
 	raw, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return teeSigningPins.empty(), nil
+	}
 	if err != nil {
-		return empty
+		return nil, errTeePinStoreUnreadable(path, err.Error())
 	}
-	var f teeSigningPksFile
-	if json.Unmarshal(raw, &f) != nil || f.V != teeSigningPinVersion || f.Owners == nil {
-		return empty
+	var f sidecarFile[teeSigningPk]
+	if err := json.Unmarshal(raw, &f); err != nil {
+		return nil, errTeePinStoreUnreadable(path, "it is not valid JSON")
 	}
-	return &f
+	if f.V != teeSigningPinVersion {
+		return nil, errTeePinStoreUnreadable(path, fmt.Sprintf("it is format version %d and this build reads version %d", f.V, teeSigningPinVersion))
+	}
+	if f.Owners == nil {
+		f.Owners = map[string]teeSigningPk{}
+	}
+	return &f, nil
 }
 
-func teeSigningRecord() teeSigningPk {
+func errTeePinStoreUnreadable(path, why string) error {
+	return fmt.Errorf("tee_pin_store_unreadable: %s exists but cannot be used (%s), so nothing it pins can be checked and it was left untouched. Run `pc te repin` to set it aside and pin what the server offers after comparing fingerprints, or inspect or remove the file yourself", path, why)
+}
+
+func teeSigningRecord() (teeSigningPk, error) {
 	owner := signingPinOwner()
 	if owner == "" {
-		return teeSigningPk{}
+		return teeSigningPk{}, nil
 	}
-	return loadTeeSigningPkFile().Owners[owner]
+	f, err := loadTeeSigningPkFile()
+	if err != nil {
+		return teeSigningPk{}, err
+	}
+	return f.Owners[owner], nil
 }
 
 func (r teeSigningPk) pinned() bool {
@@ -132,16 +137,17 @@ func (r teeSigningPk) accepts(edB64, mlB64 string) bool {
 }
 
 func pinnedTeeSigningPk() (teeSigningPk, bool) {
-	rec := teeSigningRecord()
+	rec, _ := teeSigningRecord()
 	return rec, rec.pinned()
 }
 
 func teeSigningPkPinned() bool {
-	return teeSigningRecord().pinned()
+	rec, _ := teeSigningRecord()
+	return rec.pinned()
 }
 
 func TeeSigningPins() (*TeeSigningKey, []TeeSigningKey) {
-	rec := teeSigningRecord()
+	rec, _ := teeSigningRecord()
 	var pinned *TeeSigningKey
 	if rec.pinned() {
 		pinned = &TeeSigningKey{Ed25519: rec.Ed, Mldsa: rec.Ml}
@@ -177,29 +183,34 @@ func (o *TeeAttestationOffer) Fingerprint() string {
 func (o *TeeAttestationOffer) PostureLabel() string { return o.posture.label() }
 
 func (p teeAttestationPosture) label() string {
+	keys := shortSealingFingerprint(p.SealingPk, p.SealingPkKyber)
 	switch {
 	case p.Mode == "epid" && p.Mrenclave != "":
-		return "SGX measurement " + p.Mrenclave
+		return "SGX measurement " + p.Mrenclave + ", sealing key " + keys
 	case p.SealingPk != "":
-		return "unattested sealing key " + shortSealingFingerprint(p.SealingPk)
+		return "unattested sealing key " + keys
 	default:
 		return ""
 	}
 }
 
-func shortSealingFingerprint(pkB64 string) string {
+func shortSealingFingerprint(pkB64, kyberB64 string) string {
 	raw, err := base64.StdEncoding.DecodeString(pkB64)
 	if err != nil {
 		return ""
 	}
-	sum := sha256.Sum256(raw)
+	kyber, err := base64.StdEncoding.DecodeString(kyberB64)
+	if err != nil {
+		return ""
+	}
+	sum := sha256.Sum256(append(raw, kyber...))
 	hexed := hex.EncodeToString(sum[:])
 	return hexed[0:4] + " " + hexed[4:8] + " " + hexed[8:12] + " " + hexed[12:16]
 }
 
 func PinnedTeeAttestationLabel() string {
-	p := pinnedTeeAttestationPosture()
-	if p == nil {
+	p, err := pinnedTeeAttestationPosture()
+	if err != nil || p == nil {
 		return ""
 	}
 	return p.label()
@@ -218,7 +229,11 @@ func validateTeeSigningPair(edB64, mlB64 string) error {
 }
 
 func RepinTeeSigningPk(offer *TeeAttestationOffer) error {
-	path := teeSigningPksPath()
+	return defaultSession.RepinTeeSigningPk(offer)
+}
+
+func (s *Session) RepinTeeSigningPk(offer *TeeAttestationOffer) error {
+	path := teeSigningPins.path()
 	owner := signingPinOwner()
 	if path == "" || owner == "" {
 		return errors.New("no account key set is configured, so there is no pin to move")
@@ -233,7 +248,14 @@ func RepinTeeSigningPk(offer *TeeAttestationOffer) error {
 		return errors.New("tee_signing_pk_unfingerprintable: the offered key set has no fingerprint to show")
 	}
 	teeSigningFileMu.Lock()
-	f := loadTeeSigningPkFile()
+	f, err := loadTeeSigningPkFile()
+	if err != nil {
+		if renameErr := os.Rename(path, path+".unreadable"); renameErr != nil {
+			teeSigningFileMu.Unlock()
+			return fmt.Errorf("%w; setting it aside failed: %v", err, renameErr)
+		}
+		f = teeSigningPins.empty()
+	}
 	rec := f.Owners[owner]
 	keySame := rec.Ed == offer.Ed25519 && rec.Ml == offer.Mldsa
 	postureSame := rec.Posture != nil && *rec.Posture == offer.posture
@@ -255,31 +277,38 @@ func RepinTeeSigningPk(offer *TeeAttestationOffer) error {
 	next := offer.posture
 	rec.Posture = &next
 	f.Owners[owner] = rec
-	writeTeeSigningPkFile(path, f)
+	_ = teeSigningPins.store(f)
 	teeSigningFileMu.Unlock()
 
-	forgetTeeAttestationMemos()
+	s.forgetTeeAttestationMemos()
 	return nil
 }
 
-func forgetTeeAttestationMemos() {
+func (s *Session) forgetTeeAttestationMemos() {
 	teeSigningAttMu.Lock()
 	teeSigningAtt = nil
 	teeSigningAttNextTry = time.Time{}
 	teeSigningAttMu.Unlock()
-	cachedTeeEnclaveKeySet = nil
-	teeEnclaveKeyRefusal = nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.teeEnclaveKeySet = nil
+	s.teeEnclaveKeyRefusal = nil
+	s.teeKeysEpoch++
+	s.teeKeysFetch = nil
 }
 
 func ForgetRetiredTeeSigningPk(fingerprint string) bool {
-	path := teeSigningPksPath()
+	path := teeSigningPins.path()
 	owner := signingPinOwner()
 	if path == "" || owner == "" || fingerprint == "" {
 		return false
 	}
 	teeSigningFileMu.Lock()
 	defer teeSigningFileMu.Unlock()
-	f := loadTeeSigningPkFile()
+	f, err := loadTeeSigningPkFile()
+	if err != nil {
+		return false
+	}
 	rec := f.Owners[owner]
 	kept := make([]retiredTeeSigningPk, 0, len(rec.Retired))
 	for _, r := range rec.Retired {
@@ -293,65 +322,69 @@ func ForgetRetiredTeeSigningPk(fingerprint string) bool {
 	}
 	rec.Retired = kept
 	f.Owners[owner] = rec
-	writeTeeSigningPkFile(path, f)
+	_ = teeSigningPins.store(f)
 	return true
 }
 
 var teeSigningFileMu sync.Mutex
 
 func recordTeeSigningPk(edB64, mlB64 string) {
-	path := teeSigningPksPath()
+	path := teeSigningPins.path()
 	owner := signingPinOwner()
 	if path == "" || owner == "" || edB64 == "" || mlB64 == "" {
 		return
 	}
 	teeSigningFileMu.Lock()
 	defer teeSigningFileMu.Unlock()
-	f := loadTeeSigningPkFile()
-	rec := f.Owners[owner]
-	rec.Ed, rec.Ml = edB64, mlB64
-	f.Owners[owner] = rec
-	writeTeeSigningPkFile(path, f)
-}
-
-func writeTeeSigningPkFile(path string, f *teeSigningPksFile) {
-	data, err := json.Marshal(f)
+	f, err := loadTeeSigningPkFile()
 	if err != nil {
 		return
 	}
-	_ = os.MkdirAll(filepath.Dir(path), 0700)
-	_ = fsutil.WriteFileAtomic(path, data, 0600)
+	rec := f.Owners[owner]
+	rec.Ed, rec.Ml = edB64, mlB64
+	f.Owners[owner] = rec
+	_ = teeSigningPins.store(f)
 }
 
-func pinnedTeeAttestationPosture() *teeAttestationPosture {
+func pinnedTeeAttestationPosture() (*teeAttestationPosture, error) {
 	owner := signingPinOwner()
 	if owner == "" {
-		return nil
+		return nil, nil
 	}
-	rec, ok := loadTeeSigningPkFile().Owners[owner]
-	if !ok || rec.Posture == nil || rec.Posture.Mode == "" {
-		return nil
+	f, err := loadTeeSigningPkFile()
+	if err != nil {
+		return nil, err
 	}
-	return rec.Posture
+	rec, ok := f.Owners[owner]
+	if !ok || rec.Posture == nil {
+		return nil, nil
+	}
+	if rec.Posture.Mode != "epid" && rec.Posture.Mode != "none" {
+		return nil, errTeePinStoreUnreadable(teeSigningPins.path(), fmt.Sprintf("this account's scanner posture has mode %q, which this build does not know", rec.Posture.Mode))
+	}
+	return rec.Posture, nil
 }
 
 func recordTeeAttestationPosture(p teeAttestationPosture) {
-	path := teeSigningPksPath()
+	path := teeSigningPins.path()
 	owner := signingPinOwner()
 	if path == "" || owner == "" || p.Mode == "" {
 		return
 	}
 	teeSigningFileMu.Lock()
 	defer teeSigningFileMu.Unlock()
-	f := loadTeeSigningPkFile()
+	f, err := loadTeeSigningPkFile()
+	if err != nil {
+		return
+	}
 	rec := f.Owners[owner]
 	rec.Posture = &p
 	f.Owners[owner] = rec
-	writeTeeSigningPkFile(path, f)
+	_ = teeSigningPins.store(f)
 }
 
 type servedAttestation struct {
-	Mode, Mrenclave, Quote, Status, SealingPk string
+	Mode, Mrenclave, Quote, Status, SealingPk, SealingPkKyber string
 }
 
 func (a servedAttestation) sgx() bool {
@@ -363,36 +396,58 @@ func teeRepinSidecarNote(path string) string {
 }
 
 func checkTeeAttestationPosture(att servedAttestation) (func(), error) {
-	path := teeSigningPksPath()
+	path := teeSigningPins.path()
 	if att.Status == "untrusted" {
 		return nil, errors.New("tee_attestation_untrusted: the server reports its own enclave attestation as untrusted")
 	}
 	if att.sgx() && att.Status != "trusted" {
 		return nil, errors.New("tee_attestation_unverified: the server reports SGX mode without a verified quote")
 	}
-	pinned := pinnedTeeAttestationPosture()
-	if pinned != nil && pinned.Mode != "epid" && pinned.Mode != "none" {
-		pinned = nil
+	offered, err := postureFor(att)
+	if err != nil {
+		return nil, err
+	}
+	commit := func() { recordTeeAttestationPosture(offered) }
+	pinned, err := pinnedTeeAttestationPosture()
+	if err != nil {
+		return nil, err
 	}
 	switch {
 	case pinned == nil:
-	case pinned.Mode == "epid" && !att.sgx():
-		return nil, fmt.Errorf("tee_attestation_downgraded: this account last saw a verified SGX enclave and the server now offers an unattested key. If the deployment deliberately left SGX, `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
-	case pinned.Mode == "epid" && att.Mrenclave != pinned.Mrenclave:
+		return commit, nil
+	case pinned.Mode == "epid" && offered.Mode != "epid":
+		return nil, fmt.Errorf("tee_attestation_downgraded: this account last saw an SGX enclave and the server now offers an unattested key. If the deployment deliberately left SGX, `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
+	case pinned.Mode != offered.Mode:
+		return nil, fmt.Errorf("tee_attestation_mode_changed: the server now claims an SGX enclave where this account pinned an unattested key, and this client cannot verify that claim. If the deployment deliberately moved to SGX, `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
+	case offered.Mode == "epid" && offered.Mrenclave != pinned.Mrenclave:
 		return nil, fmt.Errorf("tee_mrenclave_changed: the enclave measurement differs from the one pinned for this account. If the scanner was deliberately rebuilt, `pc te repin` shows both measurements and moves the pin; %s", teeRepinSidecarNote(path))
-	case pinned.Mode == "epid":
-		return func() {}, nil
-	case att.sgx():
-	case att.SealingPk != pinned.SealingPk:
-		return nil, fmt.Errorf("tee_enclave_pk_changed: the enclave sealing key differs from the one pinned for this account. If the scanner was deliberately rekeyed, `pc te repin` shows both keys and moves the pin; %s", teeRepinSidecarNote(path))
+	case offered.SealingPk != pinned.SealingPk:
+		return nil, errTeeEnclavePkChanged()
+	case pinned.SealingPkKyber == "":
+		return func() {
+			commit()
+			teeNotice("the scanner's post-quantum (ML-KEM) sealing key was pinned on this contact because this account's pin predates it; run `pc te repin` from a trusted network to re-establish it")
+		}, nil
+	case offered.SealingPkKyber != pinned.SealingPkKyber:
+		return nil, errTeeEnclavePkChanged()
 	default:
 		return func() {}, nil
 	}
-	next := teeAttestationPosture{Mode: "none", SealingPk: att.SealingPk}
-	if att.sgx() {
-		next = teeAttestationPosture{Mode: "epid", Mrenclave: att.Mrenclave}
+}
+
+var teeNotice = output.PrintWarning
+
+func errTeeEnclavePkChanged() error {
+	return fmt.Errorf("tee_enclave_pk_changed: the enclave sealing key differs from the one pinned for this account. If the scanner was deliberately rekeyed, `pc te repin` shows both keys and moves the pin; %s", teeRepinSidecarNote(teeSigningPins.path()))
+}
+
+func teeKeySetMatchesPin(set *crypto.PublicKeySet) bool {
+	pinned, err := pinnedTeeAttestationPosture()
+	if err != nil || set == nil || pinned == nil {
+		return false
 	}
-	return func() { recordTeeAttestationPosture(next) }, nil
+	return pinned.SealingPk == base64.StdEncoding.EncodeToString(set.X25519[:]) &&
+		pinned.SealingPkKyber == base64.StdEncoding.EncodeToString(set.Kyber)
 }
 
 var (
@@ -474,6 +529,7 @@ func OfferedTeeSigningPk() (*TeeAttestationOffer, error) {
 	served := servedAttestation{
 		Mode: att.AttestationMode, Mrenclave: att.Mrenclave, Quote: att.SgxQuote,
 		Status: att.VerificationStatus, SealingPk: att.EnclavePublicKey,
+		SealingPkKyber: att.EnclavePublicKeyKyber,
 	}
 	posture, err := postureFor(served)
 	if err != nil {
@@ -487,22 +543,31 @@ func OfferedTeeSigningPk() (*TeeAttestationOffer, error) {
 }
 
 func postureFor(att servedAttestation) (teeAttestationPosture, error) {
-	if att.sgx() {
-		return teeAttestationPosture{Mode: "epid", Mrenclave: att.Mrenclave}, nil
-	}
 	raw, err := base64.StdEncoding.DecodeString(att.SealingPk)
 	if err != nil || len(raw) != 32 {
-		return teeAttestationPosture{}, errors.New("tee_enclave_key_malformed: the attestation carries no usable X25519 sealing key to pin alongside the signing keys")
+		return teeAttestationPosture{}, errors.New("tee_enclave_key_malformed: the server answered with an X25519 sealing key that is not 32 bytes")
 	}
-	return teeAttestationPosture{Mode: "none", SealingPk: att.SealingPk}, nil
+	kyber, err := base64.StdEncoding.DecodeString(att.SealingPkKyber)
+	if err != nil || len(kyber) != crypto.KyberPublicKeySize {
+		return teeAttestationPosture{}, errors.New("tee_enclave_key_malformed: the server answered with an ML-KEM sealing key of the wrong size")
+	}
+	p := teeAttestationPosture{Mode: "none", SealingPk: att.SealingPk, SealingPkKyber: att.SealingPkKyber}
+	if att.sgx() {
+		p.Mode, p.Mrenclave = "epid", att.Mrenclave
+	}
+	return p, nil
 }
 
 func checkTeeSigningPks(edB64, mlB64 string) (func(), error) {
-	if rec := teeSigningRecord(); rec.pinned() {
+	rec, err := teeSigningRecord()
+	if err != nil {
+		return nil, err
+	}
+	if rec.pinned() {
 		if rec.accepts(edB64, mlB64) {
 			return func() {}, nil
 		}
-		return nil, fmt.Errorf("tee_signing_pk_changed: the enclave signing key differs from the one pinned for this account. If the enclave was deliberately rekeyed, `pc te repin` shows both fingerprints and moves the pin, keeping the files the old key signed readable; deleting %s instead accepts the next key it is offered, which is also what an attacker needs, and refuses every file the old key signed", teeSigningPksPath())
+		return nil, fmt.Errorf("tee_signing_pk_changed: the enclave signing key differs from the one pinned for this account. If the enclave was deliberately rekeyed, `pc te repin` shows both fingerprints and moves the pin, keeping the files the old key signed readable; deleting %s instead accepts the next key it is offered, which is also what an attacker needs, and refuses every file the old key signed", teeSigningPins.path())
 	}
 	att := attestedTeeSigningPk()
 	if att == nil {

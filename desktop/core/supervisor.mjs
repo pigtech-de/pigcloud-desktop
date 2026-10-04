@@ -19,7 +19,8 @@ function projectStatus(raw) {
 }
 
 function preferences(config) {
-    return { launchOnStartup: config.launch_on_startup, minimizeToTray: config.minimize_to_tray };
+    return { launchOnStartup: config.launch_on_startup, minimizeToTray: config.minimize_to_tray,
+        allowPrerelease: config.allow_prerelease === true };
 }
 
 export function createEngine(options) {
@@ -255,6 +256,10 @@ export class SyncSupervisor {
             this.publish();
             return this.settings();
         });
+    }
+
+    reportAppearance(appearance) {
+        return this.enqueue(() => this.store.saveAppearance(appearance));
     }
 
     setCliPath(executable) {

@@ -16,7 +16,10 @@
     "build": "npm run build:assets && npm run build:cli",
     "package": "npm run build && electron-builder --publish never",
     "package:dir": "npm run build && electron-builder --dir --publish never",
-    "smoke": "electron smoke.mjs"
+    "smoke": "electron smoke.mjs && electron smoke.mjs --online-start"
+  },
+  "dependencies": {
+    "electron-updater": "6.8.9"
   },
   "devDependencies": {
     "@electron/fuses": "2.1.3",
@@ -28,13 +31,15 @@
     "productName": "PigCloud",
     "asar": true,
     "directories": {"output": "dist"},
-    "files": ["*.mjs", "core/**", "preload.cjs", "bundle/**", "package.json", "!build-*.mjs", "!smoke.mjs"],
+    "files": ["*.mjs", "core/**", "preload.cjs", "bundle/**", "package.json", "node_modules/**", "!build-*.mjs", "!smoke.mjs"],
+    "publish": [{"provider": "github", "owner": "pigtech-de", "repo": "pigcloud-desktop", "private": false, "publishAutoUpdate": true, "releaseType": "release"}],
+    "detectUpdateChannel": false,
     "extraResources": [{"from": "resources", "to": ".", "filter": ["pc", "pc.exe"]}],
     "afterPack": "./build-fuses.mjs",
-    "win": {"target": ["nsis", "zip"], "icon": "../sync/packaging/icons/pigcloud-sync.ico"},
+    "win": {"target": ["nsis", "zip"], "icon": "icons/icon.ico"},
     "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true},
-    "mac": {"target": ["dmg", "zip"], "category": "public.app-category.productivity", "icon": "../sync/packaging/icons/pigcloud-sync-1024.png", "hardenedRuntime": true},
-    "linux": {"target": ["deb", "AppImage"], "category": "Network", "icon": "../sync/packaging/icons/pigcloud-sync-512.png"},
+    "mac": {"target": ["dmg", "zip"], "category": "public.app-category.productivity", "icon": "icons/icon.icns", "hardenedRuntime": true},
+    "linux": {"target": ["deb", "AppImage"], "category": "Network", "icon": "icons/icon-512.png"},
     "artifactName": "pigcloud-${version}-${os}-${arch}.${ext}"
   }
 }

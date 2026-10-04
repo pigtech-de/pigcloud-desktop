@@ -111,9 +111,7 @@ func runHideList() {
 
 	for i := range payload.Items {
 		item := &payload.Items[i]
-		if item.E2EEDisplayName != "" {
-			item.Name = e2ee.DecryptE2EEName(item.E2EEDisplayName)
-		}
+		item.Name = e2ee.ResolveName(item.E2EEDisplayName, item.Name)
 	}
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {

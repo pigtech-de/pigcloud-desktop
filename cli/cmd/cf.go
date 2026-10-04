@@ -1,14 +1,12 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"net/url"
-	"os"
-	"os/signal"
 	"strings"
 
 	"pigcloud/internal/api"
+	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/config"
 	"pigcloud/internal/output"
 
@@ -169,13 +167,7 @@ func runConfigSet(key, value string) {
 		output.PrintSuccess("Endpoint updated to " + value)
 
 	case "cwd":
-		if !config.IsLoggedIn() {
-			output.PrintError("Not logged in. Cannot validate path.")
-			ExitWithError()
-			return
-		}
-
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+		ctx, cancel := cmdutil.StartAuthed(ExitWithError)
 		defer cancel()
 
 		client := api.NewClient()
