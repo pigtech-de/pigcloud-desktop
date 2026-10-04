@@ -1,7 +1,7 @@
 import {readFile} from 'node:fs/promises';
 import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {CLOUD_URL, OFFLINE_URL, RELEASE_URL, ACCOUNT_URL, CHANGE_CHANNEL, isTrustedUrl, cloudNavigation, externalUrl, bundlePath, allowsPermission, deviceVerificationUrl} from './host-policy.mjs';
+import {CLOUD_URL, SYNC_SETTINGS_URL, OFFLINE_URL, RELEASE_URL, ACCOUNT_URL, CHANGE_CHANNEL, isTrustedUrl, cloudNavigation, externalUrl, bundlePath, allowsPermission, deviceVerificationUrl} from './host-policy.mjs';
 import {registerSyncIpc} from './host-ipc.mjs';
 import {createStartup} from './host-startup.mjs';
 import {createDesktopLogin} from './host-auth.mjs';
@@ -152,14 +152,17 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             if (!closing) dialog.showErrorBox(t('desktopNativeBootTitle'), t('desktopNativeBundleError'));
         }
     };
-    async function openCloud() {
+    function openCloud() {
+        return loadRemote(CLOUD_URL);
+    }
+    async function loadRemote(url) {
         const attempt = ++remoteAttempt;
         clearTimeout(deadline);
         deadline = setTimeout(() => {
             if (remoteAttempt === attempt) fallback().catch(() => {});
         }, 15000);
         try {
-            await window.loadURL(CLOUD_URL);
+            await window.loadURL(url);
             if (remoteAttempt === attempt) clearTimeout(deadline);
             return {success: true};
         } catch {
@@ -245,7 +248,7 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             }).catch(() => {});
             return result;
         }, loginCli, cancelLoginCli, shell, t});
-    const openSync = () => window.loadURL(OFFLINE_URL).then(show);
+    const openSync = () => loadRemote(SYNC_SETTINGS_URL).then(show);
     const nativeAction = action => action().catch(() => {
         diagnostics.record('native_action_failed').catch(() => {});
         openSync().catch(() => {}).then(() => dialog.showErrorBox(t('desktopNativeBootTitle'), t('desktopNativeActionError')));

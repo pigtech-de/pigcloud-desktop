@@ -85,6 +85,24 @@ func Load() {
 	if v, ok := loadAPIKey(); ok {
 		cfg.APIKey = v
 	}
+	if cfg.Endpoint == legacyEndpoint {
+		migrateLegacyEndpoint()
+	}
+}
+
+const legacyEndpoint = "https://pigtech.de/cloud/actions.php"
+
+func migrateLegacyEndpoint() {
+	deviceKey, hadDeviceKey := loadDeviceKey()
+	cfg.Endpoint = DefaultEndpoint
+	if err := Save(); err != nil {
+		cfg.Endpoint = legacyEndpoint
+		return
+	}
+	secretStore().DeleteSecret(secretKeyFor(legacyEndpoint))
+	if !hadDeviceKey || storeDeviceKey(deviceKey) {
+		secretStore().DeleteSecret(secretKeyFor(legacyEndpoint) + "|e2ee")
+	}
 }
 
 func Save() error {

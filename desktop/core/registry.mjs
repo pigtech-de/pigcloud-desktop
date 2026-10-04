@@ -5,13 +5,18 @@ import { decodeWire } from './wire.mjs';
 import { normalizeRemote, normalizeLocal } from './config.mjs';
 
 export const DESKTOP_ENDPOINT = 'https://pigcloud.de/cloud/actions.php';
+const LEGACY_ENDPOINT = 'https://pigtech.de/cloud/actions.php';
+
+export function canonicalEndpoint(value) {
+    return value === LEGACY_ENDPOINT ? DESKTOP_ENDPOINT : value;
+}
 
 export async function readAccount(directory, io = fs) {
     try {
         const stat = await io.stat(path.join(directory, 'config.json'));
         if (stat.size > 1024 * 1024) return null;
         const raw = JSON.parse(await io.readFile(path.join(directory, 'config.json'), 'utf8'));
-        const endpoint = typeof raw.endpoint === 'string' ? raw.endpoint : DESKTOP_ENDPOINT;
+        const endpoint = typeof raw.endpoint === 'string' ? canonicalEndpoint(raw.endpoint) : DESKTOP_ENDPOINT;
         if (endpoint !== DESKTOP_ENDPOINT) return { owner: '', endpoint };
         if (typeof raw.public_key !== 'string' || !/^[A-Za-z0-9+/]+={0,2}$/u.test(raw.public_key)) return null;
         const key = Buffer.from(raw.public_key, 'base64');
@@ -51,7 +56,7 @@ export async function listRegistry(directory, io = fs) {
 }
 
 export function matchesPair(entry, pair, account, platform = process.platform) {
-    return !!account?.owner && account.endpoint === DESKTOP_ENDPOINT && entry.endpoint === DESKTOP_ENDPOINT
+    return !!account?.owner && account.endpoint === DESKTOP_ENDPOINT && canonicalEndpoint(entry.endpoint) === DESKTOP_ENDPOINT
         && entry.owner === account.owner && entry.mode === 'sync'
         && normalizeRemote(entry.remote_path) === normalizeRemote(pair.remote_path)
         && normalizeLocal(entry.mount_point, platform) === normalizeLocal(pair.mount_point, platform)

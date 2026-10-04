@@ -2,6 +2,7 @@ window.PigcloudSettingsSync = (() => {
     "use strict";
 
     const EVT = window.PigcloudConstants.EVT;
+    const SILENT_ACTIONS = new Set(["check-updates", "install-update", "updates", "cloud", "open-folder"]);
     const instances = new WeakMap();
     const tr = (key, replacements) => window.t(key, replacements);
     function displayPath(value) {
@@ -418,7 +419,7 @@ window.PigcloudSettingsSync = (() => {
             }
         }
         function permittedWhileBlocked(action, pairId) {
-            return ["refresh", "connect", "cancel-connect", "login", "cloud", "updates", "check-updates", "install-update"].includes(action) || (action === "stop" && !pairId);
+            return ["refresh", "connect", "cancel-connect", "login", "cloud", "updates", "check-updates", "install-update", "pick-cli", "reset-cli"].includes(action) || (action === "stop" && !pairId);
         }
         function activityTime(timestamp) {
             if (!Number.isFinite(timestamp)) return "";
@@ -1027,7 +1028,7 @@ window.PigcloudSettingsSync = (() => {
                     if (result?.success === false || result?.ok === false) throw new Error("Action failed");
                     if (current(captured)) {
                         if (name === "resolve") resolvedPaths.add(key);
-                        message(name === "resolve" ? "syncResolved" : "syncActionDone");
+                        if (!SILENT_ACTIONS.has(name)) message(name === "resolve" ? "syncResolved" : "syncActionDone");
                     }
                 }
             } catch (error) {

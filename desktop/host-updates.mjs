@@ -2,6 +2,7 @@ import {RELEASE_URL, UPDATE_FEED} from './host-policy.mjs';
 
 export const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 export const STOP_DEADLINE = 30000;
+const NO_RELEASE = new Set(['ERR_UPDATER_NO_PUBLISHED_VERSIONS', 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND']);
 
 function parseVersion(value) {
     const text = String(value ?? '').trim().replace(/^v/, '');
@@ -121,6 +122,10 @@ export function createUpdates({updater, currentVersion, packaged = true, onChang
         });
         updater.on('error', error => {
             if (state === 'installing') return;
+            if (NO_RELEASE.has(error?.code) && !downloaded) {
+                move('idle');
+                return;
+            }
             move('error', {version, code: error?.code === 'ERR_UPDATER_INVALID_SIGNATURE' ? 'updateSignature' : 'updateFailed'});
             record('update_failed').catch(() => {});
         });

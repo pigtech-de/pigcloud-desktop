@@ -2,7 +2,10 @@ package config
 
 import (
 	"bytes"
+	"encoding/hex"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -129,5 +132,41 @@ func TestEndpointChangeCarriesCredentialsToTheNewHost(t *testing.T) {
 	}
 	if !bytes.Equal(got, deviceKey) {
 		t.Error("E2EE device key changed value across the endpoint change")
+	}
+}
+
+func TestLoadMovesThePigtechDefaultToTheCanonicalEndpoint(t *testing.T) {
+	isolateConfig(t)
+	deviceKey := bytes.Repeat([]byte{0x3c}, 32)
+	path := getConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"endpoint":"`+legacyEndpoint+`","cwd":"/docs"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	testSecrets.SetSecret("pigtech.de", "pc_live_old")
+	testSecrets.SetSecret("pigtech.de|e2ee", hex.EncodeToString(deviceKey))
+
+	cfg = nil
+	Load()
+
+	if got := GetEndpoint(); got != DefaultEndpoint {
+		t.Fatalf("endpoint = %q, want the canonical %q", got, DefaultEndpoint)
+	}
+	if got := GetAPIKey(); got != "pc_live_old" {
+		t.Errorf("API key = %q after the move, want it kept", got)
+	}
+	if got, ok := LoadE2EEDeviceKey(); !ok || !bytes.Equal(got, deviceKey) {
+		t.Error("E2EE device key did not follow the endpoint move")
+	}
+	for _, host := range []string{"pigtech.de", "pigtech.de|e2ee"} {
+		if _, ok := hostEntry(t, host); ok {
+			t.Errorf("keychain entry %q survived the move", host)
+		}
+	}
+	data, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(data), DefaultEndpoint) || !strings.Contains(string(data), `"/docs"`) {
+		t.Errorf("config file was not rewritten in place: %s %v", data, err)
 	}
 }

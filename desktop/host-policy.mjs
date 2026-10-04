@@ -1,5 +1,6 @@
 export const CLOUD_ORIGIN = 'https://pigcloud.de';
 export const CLOUD_URL = `${CLOUD_ORIGIN}/cloud/`;
+export const SYNC_SETTINGS_URL = `${CLOUD_URL}#!settings/sync`;
 export const OFFLINE_URL = 'pigcloud-app://settings/index.html';
 export const UPDATE_OWNER = 'pigtech-de';
 export const UPDATE_REPOSITORY = 'pigcloud-desktop';
