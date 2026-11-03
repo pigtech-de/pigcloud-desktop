@@ -18,8 +18,7 @@ import (
 
 type signingAnswer struct {
 	ed, ml           string
-	mode, mrenclave  string
-	quote, status    string
+	mode             string
 	sealX, sealKyber string
 }
 
@@ -31,9 +30,6 @@ func serveSigningKeys(t *testing.T, answer *atomic.Pointer[signingAnswer]) {
 			"success": true, "enabled": true, "available": true,
 			"attestation": map[string]any{
 				"attestation_mode":           a.mode,
-				"mrenclave":                  a.mrenclave,
-				"sgx_quote":                  a.quote,
-				"verification_status":        a.status,
 				"enclave_signing_pk_ed25519": a.ed,
 				"enclave_signing_pk_mldsa":   a.ml,
 				"enclave_public_key":         a.sealX,
@@ -52,7 +48,7 @@ func rebuiltEnclave(t *testing.T) signingAnswer {
 	t.Helper()
 	ed, ml := servedPair(t)
 	return signingAnswer{
-		ed: ed, ml: ml, mode: "none", status: "unverified",
+		ed: ed, ml: ml, mode: "none",
 		sealX:     b64(randKey(t, 32)),
 		sealKyber: b64(randKey(t, crypto.KyberPublicKeySize)),
 	}
@@ -100,7 +96,7 @@ func TestTeeSigningPinFirstContactPinsTheAttestedKey(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	ed, ml := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: ed, ml: ml, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: ed, ml: ml, mode: "none"})
 	serveSigningKeys(t, &answer)
 
 	if err := accept(t, ed, ml); err != nil {
@@ -120,7 +116,7 @@ func TestTeeSigningPinRefusesTheRekeyedKeyUntilRepin(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -144,7 +140,7 @@ func TestTeeSigningRepinRetiresTheOldKeyAndKeepsItReadable(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -188,7 +184,7 @@ func TestTeeSigningRetiredKeyDoesNotDemoteThePin(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -212,7 +208,7 @@ func TestTeeSigningPinRefusesAKeyThatWasNeverAccepted(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -237,7 +233,7 @@ func TestTeeSigningForgetRetiredKeyRefusesItsFilesAgain(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -264,7 +260,7 @@ func TestTeeSigningSidecarDeletionReAnchorsOnTheCurrentKey(t *testing.T) {
 	forgetAttestedSigningPk(t)
 	oldEd, oldMl := servedPair(t)
 	var answer atomic.Pointer[signingAnswer]
-	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: oldEd, ml: oldMl, mode: "none"})
 	serveSigningKeys(t, &answer)
 	if err := accept(t, oldEd, oldMl); err != nil {
 		t.Fatalf("first contact refused: %v", err)
@@ -274,7 +270,7 @@ func TestTeeSigningSidecarDeletionReAnchorsOnTheCurrentKey(t *testing.T) {
 		t.Fatalf("removing the sidecar: %v", err)
 	}
 	newEd, newMl := servedPair(t)
-	answer.Store(&signingAnswer{ed: newEd, ml: newMl, mode: "none", status: "unverified"})
+	answer.Store(&signingAnswer{ed: newEd, ml: newMl, mode: "none"})
 	teeSigningAttMu.Lock()
 	teeSigningAtt = nil
 	teeSigningAttNextTry = time.Time{}

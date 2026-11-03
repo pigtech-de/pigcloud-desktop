@@ -2,8 +2,10 @@ package syncer
 
 import (
 	"context"
+	"hash/fnv"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"pigcloud/internal/mount/cache"
@@ -13,12 +15,17 @@ import (
 
 const reconcileInterval = 3 * time.Minute
 
+const fullSweepInterval = 24 * time.Hour
+
+const fullSweepMetaKey = "reconcile_full_at"
+
 type Reconciler struct {
 	syncDir    string
 	remotePath string
 	cacheDB    *cache.DB
 	store      *cache.Store
 	interval   time.Duration
+	nextFull   time.Time
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -30,7 +37,13 @@ func NewReconciler(syncDir, remotePath string, cacheDB *cache.DB, interval time.
 	if interval <= 0 {
 		interval = reconcileInterval
 	}
-	return &Reconciler{syncDir: syncDir, remotePath: remotePath, cacheDB: cacheDB, interval: interval}
+	stagger := fnv.New64a()
+	stagger.Write([]byte(syncDir + "\x00" + remotePath))
+	nextFull := time.Now().Add(time.Duration(stagger.Sum64() % uint64(fullSweepInterval)))
+	if last, err := strconv.ParseInt(cacheDB.GetMeta(fullSweepMetaKey), 10, 64); err == nil && last > 0 {
+		nextFull = time.Unix(last, 0).Add(fullSweepInterval)
+	}
+	return &Reconciler{syncDir: syncDir, remotePath: remotePath, cacheDB: cacheDB, interval: interval, nextFull: nextFull}
 }
 
 func (r *Reconciler) Start() {
@@ -60,12 +73,20 @@ func (r *Reconciler) loop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			r.Reconcile(ctx)
+			full := !time.Now().Before(r.nextFull)
+			r.sweep(ctx, full)
+			if full {
+				r.nextFull = time.Now().Add(fullSweepInterval)
+			}
 		}
 	}
 }
 
-func (r *Reconciler) Reconcile(ctx context.Context) int {
+func (r *Reconciler) Reconcile(ctx context.Context) int { return r.sweep(ctx, false) }
+
+func (r *Reconciler) ReconcileFull(ctx context.Context) int { return r.sweep(ctx, true) }
+
+func (r *Reconciler) sweep(ctx context.Context, full bool) int {
 	healed := 0
 	filepath.WalkDir(r.syncDir, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
@@ -91,7 +112,7 @@ func (r *Reconciler) Reconcile(ctx context.Context) int {
 		if remotePath == "" || remotePath == r.remotePath {
 			return nil
 		}
-		if r.healEntry(path, remotePath, entry) {
+		if r.healEntry(path, remotePath, entry, full) {
 			healed++
 		}
 		return nil
@@ -99,10 +120,13 @@ func (r *Reconciler) Reconcile(ctx context.Context) int {
 	if healed > 0 {
 		mlog.Infof("reconciler: re-queued %d drifted item(s)", healed)
 	}
+	if full && ctx.Err() == nil {
+		r.cacheDB.SetMeta(fullSweepMetaKey, strconv.FormatInt(time.Now().Unix(), 10))
+	}
 	return healed
 }
 
-func (r *Reconciler) healEntry(localPath, remotePath string, entry os.DirEntry) bool {
+func (r *Reconciler) healEntry(localPath, remotePath string, entry os.DirEntry, full bool) bool {
 	if !safeSyncPath(r.syncDir, localPath) {
 		return false
 	}
@@ -154,6 +178,9 @@ func (r *Reconciler) healEntry(localPath, remotePath string, entry os.DirEntry) 
 		}
 		return r.requeueUpload(inode, info)
 	case cache.StatusSynced:
+		if !full && statUnchanged(inode, info) {
+			return false
+		}
 		current, baseline, version, err := r.cacheDB.LocalContentState(inode.ID)
 		if err != nil {
 			return false
@@ -171,6 +198,7 @@ func (r *Reconciler) healEntry(localPath, remotePath string, entry os.DirEntry) 
 			if current != "" {
 				r.cacheDB.SetLocalContentForVersion(inode.ID, current, info.ModTime().Unix(), version)
 			}
+			r.cacheDB.SetLocalFileID(inode.ID, recordedSignature(info, time.Now()))
 			return false
 		}
 		if !remoteUnchanged {

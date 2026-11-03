@@ -280,11 +280,11 @@ func TestGenerateChatMessageVector(t *testing.T) {
 	v := chatMessageVector{
 		VectorKind:  "chat_message_v1",
 		SpecVersion: 1,
-		Description: "Chat message body cipher (XChaCha20-Poly1305 IETF). Each impl must DecryptMessage(ciphertext_b64, nonce_b64, data_key_b64) and recover plaintext_b64. Guards the CLI<->web chat split (was XSalsa20 secretbox on the CLI).",
+		Description: "Chat message body cipher (XChaCha20-Poly1305 IETF). Each impl must DecryptWithKey(ciphertext_b64, nonce_b64, data_key_b64) and recover plaintext_b64. Guards the CLI<->web chat split (was XSalsa20 secretbox on the CLI).",
 		Generator: generatorMeta{
 			Impl:        "go",
 			Package:     "pigcloud/internal/crypto",
-			Function:    "EncryptMessage",
+			Function:    "EncryptWithKey",
 			Tool:        "cli/internal/crypto/genvec_test.go (PIGCLOUD_GEN_VECTORS=1 go test -run TestGenerateChatMessageVector)",
 			GeneratedAt: time.Now().UTC().Format(time.RFC3339),
 		},
@@ -735,4 +735,57 @@ func TestGenerateKeyBundleVector(t *testing.T) {
 		},
 	}
 	writeVectorJSON(t, "key_bundle_v1.json", v)
+}
+
+type recoveryKeyFormatCase struct {
+	Label     string `json:"label"`
+	KeyHex    string `json:"key_hex"`
+	Formatted string `json:"formatted"`
+}
+
+type recoveryKeyFormatVector struct {
+	VectorKind  string                  `json:"vector_kind"`
+	SpecVersion int                     `json:"spec_version"`
+	Description string                  `json:"description"`
+	Generator   map[string]string       `json:"generator"`
+	Cases       []recoveryKeyFormatCase `json:"cases"`
+}
+
+func TestGenerateRecoveryKeyFormatVector(t *testing.T) {
+	if os.Getenv("PIGCLOUD_GEN_VECTORS") != "1" {
+		t.Skip("vector generation; set PIGCLOUD_GEN_VECTORS=1 to regenerate the fixture")
+	}
+	sequential := make([]byte, 32)
+	for i := range sequential {
+		sequential[i] = byte(i)
+	}
+	keys := []struct {
+		label string
+		key   []byte
+	}{
+		{"zero", make([]byte, 32)},
+		{"ones", []byte(strings.Repeat("\xff", 32))},
+		{"sequential", sequential},
+		{"fixed", sha256Sum([]byte("pigcloud recovery key format v1"))},
+	}
+	v := recoveryKeyFormatVector{
+		VectorKind:  "recovery_key_format",
+		SpecVersion: 1,
+		Description: "32-byte recovery keys in display form: RFC 4648 base32, no padding, hyphenated groups of four. Every client must format key_hex to exactly formatted and parse formatted back to key_hex.",
+		Generator: map[string]string{
+			"impl":     "go",
+			"package":  "pigcloud/internal/crypto",
+			"function": "FormatRecoveryKey",
+			"tool":     "cli/internal/crypto/genvec_test.go (PIGCLOUD_GEN_VECTORS=1 go test -run TestGenerateRecoveryKeyFormatVector)",
+		},
+	}
+	for _, k := range keys {
+		v.Cases = append(v.Cases, recoveryKeyFormatCase{Label: k.label, KeyHex: hex.EncodeToString(k.key), Formatted: FormatRecoveryKey(k.key)})
+	}
+	writeVectorJSON(t, "recovery_key_format_v1.json", v)
+}
+
+func sha256Sum(data []byte) []byte {
+	sum := sha256.Sum256(data)
+	return sum[:]
 }

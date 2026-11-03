@@ -17,7 +17,7 @@ window.PigcloudSettingsShell = (() => {
         built.title.className = "settings-page-title";
         built.title.dataset.translateKey = "settingsPageTitle";
         built.closeBtn.id = "settings-page-close";
-        const back = node("button", "icon-button is-ghost settings-back-button");
+        const back = node("button", "icon-button is-sm settings-back-button");
         back.type = "button";
         back.id = "settings-back-button";
         back.dataset.translateAriaLabel = "settingsBackButton";

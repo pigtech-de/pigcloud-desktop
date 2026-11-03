@@ -23,7 +23,7 @@ var verifyCmd = &cobra.Command{
 	Aliases: []string{"verify"},
 	Short:   "Verify file signatures",
 	Long: `Download every file under a path and run the strict-AND signature check
-(owner-key pin, or TEE signatures for sanitized files). Bytes are verified
+(owner-key pin, or scanner signatures for sanitized files). Bytes are verified
 in memory and discarded; nothing is written to disk.
 
 Reports tampered or unverifiable files and exits non-zero if any fail.

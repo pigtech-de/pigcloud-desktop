@@ -60,17 +60,9 @@ func serveCountingAttestation(t *testing.T, a *countingAttestation) {
 			fmt.Fprint(w, `{"success":false,"error":"api_key_verify_busy"}`)
 			return
 		}
-		ans := a.answer.Load()
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"success": true, "enabled": true, "available": true,
-			"attestation": map[string]any{
-				"enclave_public_key":       b64(ans.x25519),
-				"enclave_public_key_kyber": b64(ans.kyber),
-				"attestation_mode":         ans.mode,
-				"mrenclave":                ans.mrenclave,
-				"sgx_quote":                ans.quote,
-				"verification_status":      ans.status,
-			},
+			"attestation": attestationBody(a.answer.Load()),
 		})
 	}))
 	t.Cleanup(srv.Close)
@@ -79,10 +71,14 @@ func serveCountingAttestation(t *testing.T, a *countingAttestation) {
 }
 
 func staleSealRefusal() error {
+	return staleSealRefusalWith(api.StaleTeeSealCode)
+}
+
+func staleSealRefusalWith(code string) error {
 	return fmt.Errorf("upload: %w", &api.RequestError{
 		Kind:       api.KindTransient,
 		StatusCode: http.StatusServiceUnavailable,
-		Err:        &api.APIError{Code: api.StaleTeeSealCode, Message: "The security scanner is unavailable."},
+		Err:        &api.APIError{Code: code, Message: "The security scanner is unavailable."},
 	})
 }
 
@@ -101,7 +97,7 @@ func primedSession(t *testing.T, a *countingAttestation, first attestationAnswer
 func TestEnclaveKeyFetchWaitsOutA503AndNeverCallsItMalformed(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{}
-	good := nonSgx(randKey(t, 32))
+	good := scannerKeys(randKey(t, 32))
 	a.answer.Store(&good)
 	a.before = func(n int32, w http.ResponseWriter) bool {
 		if n > 1 {
@@ -144,7 +140,7 @@ func TestEnclaveKeyFetchUnderAPersistent503IsUnreachableNotMalformed(t *testing.
 func TestEnclaveKeyFetchRefusesAMalformedKeyServedAt200(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{}
-	short := nonSgx(randKey(t, 16))
+	short := scannerKeys(randKey(t, 16))
 	a.answer.Store(&short)
 	serveCountingAttestation(t, a)
 
@@ -164,7 +160,7 @@ func TestEnclaveKeyFetchRefusesAMalformedKeyServedAt200(t *testing.T) {
 func TestParallelUploadsFetchTheAttestationOnce(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{delay: 50 * time.Millisecond}
-	good := nonSgx(randKey(t, 32))
+	good := scannerKeys(randKey(t, 32))
 	a.answer.Store(&good)
 	serveCountingAttestation(t, a)
 
@@ -224,7 +220,7 @@ func TestWaitersOnAFailingProbeShareItsOneRetryLadder(t *testing.T) {
 func TestARepinDuringAProbeDiscardsItsAnswer(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{entered: make(chan struct{}, 1), gate: make(chan struct{})}
-	good := nonSgx(randKey(t, 32))
+	good := scannerKeys(randKey(t, 32))
 	a.answer.Store(&good)
 	serveCountingAttestation(t, a)
 
@@ -255,7 +251,7 @@ func TestARepinDuringAProbeDiscardsItsAnswer(t *testing.T) {
 func TestAWaiterLeavesWhenItsContextEnds(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{entered: make(chan struct{}, 1), gate: make(chan struct{})}
-	good := nonSgx(randKey(t, 32))
+	good := scannerKeys(randKey(t, 32))
 	a.answer.Store(&good)
 	serveCountingAttestation(t, a)
 
@@ -288,9 +284,9 @@ func TestAWaiterLeavesWhenItsContextEnds(t *testing.T) {
 func TestStaleRefetchUnderANonePinRefusesAChangedKeyAndNeverReseals(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{delay: 20 * time.Millisecond}
-	s, sealedTo := primedSession(t, a, nonSgx(randKey(t, 32)))
+	s, sealedTo := primedSession(t, a, scannerKeys(randKey(t, 32)))
 
-	attacker := nonSgx(randKey(t, 32))
+	attacker := scannerKeys(randKey(t, 32))
 	a.answer.Store(&attacker)
 	const workers = 8
 	var resealed, refused atomic.Int32
@@ -322,52 +318,43 @@ func TestStaleRefetchUnderANonePinRefusesAChangedKeyAndNeverReseals(t *testing.T
 	}
 }
 
-func TestStaleRefetchUnderAnSgxPinRefusesARestartedKey(t *testing.T) {
-	withIsolatedPinStore(t)
-	a := &countingAttestation{}
-	s, sealedTo := primedSession(t, a, sgxTrusted(randKey(t, 32), "aa11"))
-
-	restarted := sgxTrusted(randKey(t, 32), "aa11")
-	a.answer.Store(&restarted)
-	stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusal(), sealedTo)
-	if stale || err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
-		t.Fatalf("stale = %v, err = %v; want no reseal and tee_enclave_pk_changed", stale, err)
-	}
-}
-
 func TestStaleRefetchResealsOnlyToAKeyTheAccountRepinned(t *testing.T) {
-	withIsolatedPinStore(t)
-	a := &countingAttestation{}
-	s, sealedTo := primedSession(t, a, nonSgx(randKey(t, 32)))
+	for _, code := range []string{api.StaleTeeSealCode, api.UploadCodeScannerKeyStale} {
+		t.Run(code, func(t *testing.T) {
+			withIsolatedPinStore(t)
+			a := &countingAttestation{}
+			s, sealedTo := primedSession(t, a, scannerKeys(randKey(t, 32)))
 
-	repinned := nonSgx(randKey(t, 32))
-	posture, err := postureFor(servedAttestation{Mode: repinned.mode, Status: repinned.status, SealingPk: b64(repinned.x25519), SealingPkKyber: b64(repinned.kyber)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	recordTeeAttestationPosture(posture)
-	a.answer.Store(&repinned)
+			repinned := scannerKeys(randKey(t, 32))
+			posture, err := postureFor(servedAttestation{SealingPk: b64(repinned.x25519), SealingPkKyber: b64(repinned.kyber)})
+			if err != nil {
+				t.Fatal(err)
+			}
+			recordTeeAttestationPosture(posture)
+			a.answer.Store(&repinned)
 
-	stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusal(), sealedTo)
-	if !stale || err != nil {
-		t.Fatalf("stale = %v, err = %v; a key the user repinned elsewhere should earn one reseal", stale, err)
-	}
-	fresh := s.FetchTeeEnclaveKeySet(context.Background())
-	if !teeKeySetMatchesPin(fresh) {
-		t.Fatal("the reseal target is not the pinned key")
-	}
-	if stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusal(), fresh); stale || err != nil {
-		t.Fatalf("a stale signal against the current pinned key asked for a reseal (%v, %v)", stale, err)
-	}
-	if got := a.calls.Load(); got != 2 {
-		t.Fatalf("attestation requests = %d, want the first contact plus one refetch", got)
+			stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusalWith(code), sealedTo)
+			if !stale || err != nil {
+				t.Fatalf("stale = %v, err = %v; a key the user repinned elsewhere should earn one reseal", stale, err)
+			}
+			fresh := s.FetchTeeEnclaveKeySet(context.Background())
+			if !teeKeySetMatchesPin(fresh) {
+				t.Fatal("the reseal target is not the pinned key")
+			}
+			if stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusalWith(code), fresh); stale || err != nil {
+				t.Fatalf("a stale signal against the current pinned key asked for a reseal (%v, %v)", stale, err)
+			}
+			if got := a.calls.Load(); got != 2 {
+				t.Fatalf("attestation requests = %d, want the first contact plus one refetch", got)
+			}
+		})
 	}
 }
 
 func TestStaleSignalsProbeAtMostOncePerGapEvenWithAnEmptyCache(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{}
-	s, sealedTo := primedSession(t, a, nonSgx(randKey(t, 32)))
+	s, sealedTo := primedSession(t, a, scannerKeys(randKey(t, 32)))
 
 	busy := fmt.Errorf("upload: %w", &api.APIError{Code: "scanner_busy"})
 	if stale, err := s.TeeSealWentStale(context.Background(), busy, sealedTo); stale || err != nil {
@@ -391,7 +378,7 @@ func TestStaleSignalsProbeAtMostOncePerGapEvenWithAnEmptyCache(t *testing.T) {
 func TestAStaleSignalWithNoAccountKeysSaysSoInsteadOfClaimingAKeyChange(t *testing.T) {
 	withIsolatedPinStore(t)
 	a := &countingAttestation{}
-	s, sealedTo := primedSession(t, a, nonSgx(randKey(t, 32)))
+	s, sealedTo := primedSession(t, a, scannerKeys(randKey(t, 32)))
 	config.Get().PublicKey = ""
 
 	stale, err := s.TeeSealWentStale(context.Background(), staleSealRefusal(), sealedTo)

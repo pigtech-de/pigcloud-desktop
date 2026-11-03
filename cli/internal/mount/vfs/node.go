@@ -11,6 +11,7 @@ type Node struct {
 	Mu sync.RWMutex
 
 	ID         int64
+	NodeID     string
 	Name       string
 	RemotePath string
 	IsDir      bool

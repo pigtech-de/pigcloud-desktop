@@ -442,5 +442,5 @@ func highlightMatch(line string, m *cmdutil.Matcher) string {
 
 func isGrepTarget(name string) bool {
 	ext := strings.ToLower(strings.TrimPrefix(filepath.Ext(name), "."))
-	return filetypes.IsText(ext)
+	return filetypes.IsPlainText(ext)
 }

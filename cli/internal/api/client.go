@@ -184,6 +184,7 @@ type Response struct {
 	MessageKey string          `json:"messageKey"`
 	Message    string          `json:"message"`
 	ErrorCode  string          `json:"errorCode,omitempty"`
+	ErrorClass string          `json:"errorClass,omitempty"`
 	Cwd        string          `json:"cwd"`
 	StatusCode int             `json:"-"`
 	Raw        json.RawMessage `json:"-"`
@@ -191,6 +192,7 @@ type Response struct {
 
 type APIError struct {
 	Code    string
+	Class   string
 	Message string
 }
 
@@ -251,6 +253,22 @@ type UploadPayload struct {
 	Storage    StorageState `json:"storage"`
 	NodeID     string       `json:"nodeId,omitempty"`
 	ETag       string       `json:"etag,omitempty"`
+}
+
+func (p *UploadPayload) UnmarshalJSON(raw []byte) error {
+	type plain UploadPayload
+	var wire struct {
+		plain
+		NodeIDWire string `json:"node_id"`
+	}
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		return err
+	}
+	*p = UploadPayload(wire.plain)
+	if p.NodeID == "" {
+		p.NodeID = wire.NodeIDWire
+	}
+	return nil
 }
 
 type StorageState struct {
@@ -493,15 +511,23 @@ type StatPayload struct {
 }
 
 type ActivityPayload struct {
-	Events      []ActivityEvent `json:"events"`
-	UnreadCount int             `json:"unreadCount"`
-	TotalCount  int             `json:"totalCount"`
-	MarkedRead  int             `json:"markedRead,omitempty"`
+	Events      []ActivityEvent          `json:"events"`
+	UnreadCount int                      `json:"unreadCount"`
+	TotalCount  int                      `json:"totalCount"`
+	MarkedRead  int                      `json:"markedRead,omitempty"`
+	EventLabels map[string]ActivityLabel `json:"eventLabels,omitempty"`
+}
+
+type ActivityLabel struct {
+	Label string `json:"label"`
+	Tone  string `json:"tone,omitempty"`
 }
 
 type ActivityEvent struct {
 	ID        int     `json:"id"`
 	EventType string  `json:"eventType"`
+	Label     string  `json:"label,omitempty"`
+	Tone      string  `json:"tone,omitempty"`
 	Detail    string  `json:"detail"`
 	CreatedAt string  `json:"createdAt"`
 	ReadAt    *string `json:"readAt"`
@@ -549,17 +575,11 @@ type VersionPrunePayload struct {
 }
 
 type LinkCreatePayload struct {
-	Path            string          `json:"path"`
-	Token           string          `json:"token"`
-	URL             string          `json:"url"`
-	LinkID          int             `json:"linkId"`
-	E2EEDisplayName string          `json:"e2eeDisplayName,omitempty"`
-	ChildNames      []ChildNameItem `json:"childNames,omitempty"`
-}
-
-type ChildNameItem struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	Path            string `json:"path"`
+	Token           string `json:"token"`
+	URL             string `json:"url"`
+	LinkID          int    `json:"linkId"`
+	E2EEDisplayName string `json:"e2eeDisplayName,omitempty"`
 }
 
 type LinkGetPayload struct {
@@ -583,17 +603,18 @@ type LinkListPayload struct {
 }
 
 type LinkListItem struct {
-	ID              int     `json:"id"`
-	NodeID          string  `json:"nodeId"`
-	Type            string  `json:"type"`
-	Token           string  `json:"token"`
-	URL             string  `json:"url"`
-	HasPassword     bool    `json:"hasPassword"`
-	ExpiresAt       *string `json:"expiresAt"`
-	DownloadCount   int     `json:"downloadCount"`
-	MaxDownloads    *int    `json:"maxDownloads"`
-	CreatedAt       string  `json:"createdAt"`
-	E2EEDisplayName string  `json:"e2ee_display_name,omitempty"`
+	ID                 int     `json:"id"`
+	NodeID             string  `json:"nodeId"`
+	Type               string  `json:"type"`
+	Token              string  `json:"token"`
+	URL                string  `json:"url"`
+	HasPassword        bool    `json:"hasPassword"`
+	ExpiresAt          *string `json:"expiresAt"`
+	DownloadCount      int     `json:"downloadCount"`
+	MaxDownloads       *int    `json:"maxDownloads"`
+	CreatedAt          string  `json:"createdAt"`
+	E2EEDisplayName    string  `json:"e2ee_display_name,omitempty"`
+	OwnerSealedLinkKey string  `json:"ownerSealedLinkKey,omitempty"`
 }
 
 type LinkActionPayload struct {
@@ -639,8 +660,8 @@ type TrashItem struct {
 	Type             string `json:"type"`
 	Size             int64  `json:"size"`
 	FileSize         int64  `json:"file_size,omitempty"`
-	DeletedAt        string `json:"deleted_at"`
-	ExpiresAt        string `json:"expires_at,omitempty"`
+	DeletedAt        string `json:"deletedAt"`
+	ExpiresAt        string `json:"expiresAt,omitempty"`
 	NodeID           string `json:"node_id,omitempty"`
 	OriginalParentID string `json:"original_parent_id,omitempty"`
 	E2EEDisplayName  string `json:"e2ee_display_name,omitempty"`
@@ -1060,7 +1081,7 @@ func (c *Client) uploadWholeBody(ctx context.Context, localPath string, progress
 			if msg == "" {
 				msg = fmt.Sprintf("upload failed with status %d", resp.StatusCode)
 			}
-			return nil, resp.StatusCode, statusError(resp, &APIError{Code: apiResp.ErrorCode, Message: msg})
+			return nil, resp.StatusCode, statusError(resp, &APIError{Code: apiResp.ErrorCode, Class: apiResp.ErrorClass, Message: msg})
 		}
 
 		apiResp.StatusCode = resp.StatusCode
@@ -1125,7 +1146,7 @@ func downloadRejection(resp *http.Response, body []byte) error {
 		if message == "" {
 			message = fmt.Sprintf("download failed with status %d", resp.StatusCode)
 		}
-		return statusError(resp, &APIError{Code: apiResp.ErrorCode, Message: message})
+		return statusError(resp, &APIError{Code: apiResp.ErrorCode, Class: apiResp.ErrorClass, Message: message})
 	}
 	return statusError(resp, rejectionError(resp.StatusCode, body))
 }
@@ -1164,8 +1185,15 @@ func (c *Client) streamDownload(ctx context.Context, jsonBody []byte, sink func(
 	})
 }
 
-func fileSink(ctx context.Context, localPath string, progress func(received, total int64)) func(io.Reader, int64) (int, error) {
+func fileSink(ctx context.Context, localPath string, progress func(received, total int64), limit ...int64) func(io.Reader, int64) (int, error) {
+	maxBytes := int64(0)
+	if len(limit) > 0 {
+		maxBytes = limit[0]
+	}
 	return func(body io.Reader, total int64) (int, error) {
+		if maxBytes > 0 && total > maxBytes {
+			return 200, fmt.Errorf("download of %d bytes exceeds the %d-byte limit: %w", total, maxBytes, ErrDownloadTooLarge)
+		}
 		tmpFile, err := os.CreateTemp(filepath.Dir(localPath), ".pigcloud-dl-*")
 		if err != nil {
 			return 0, fmt.Errorf("failed to create temp file: %w", err)
@@ -1188,6 +1216,9 @@ func fileSink(ctx context.Context, localPath string, progress func(received, tot
 					return 0, fmt.Errorf("failed to write file: %w", writeErr)
 				}
 				received += int64(n)
+				if maxBytes > 0 && received > maxBytes {
+					return 200, fmt.Errorf("download exceeds the %d-byte limit: %w", maxBytes, ErrDownloadTooLarge)
+				}
 				if progress != nil {
 					progress(received, total)
 				}
@@ -1216,6 +1247,14 @@ func (c *Client) Download(ctx context.Context, remotePath string, localPath stri
 		return nil, err
 	}
 	return c.streamDownload(ctx, jsonBody, fileSink(ctx, localPath, progress))
+}
+
+func (c *Client) DownloadLimited(ctx context.Context, remotePath, localPath string, maxBytes int64, extraOpts ...map[string]string) (*DownloadResult, error) {
+	jsonBody, err := downloadRequestBody("dl", remotePath, extraOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return c.streamDownload(ctx, jsonBody, fileSink(ctx, localPath, nil, maxBytes))
 }
 
 func (c *Client) DownloadToMemory(ctx context.Context, remotePath string, extraOpts ...map[string]string) ([]byte, *DownloadResult, error) {
@@ -1501,6 +1540,7 @@ type E2EEKeyEntry struct {
 	IsTrashed       bool   `json:"is_trashed,omitempty"`
 	E2EEDisplayName string `json:"e2ee_display_name,omitempty"`
 	E2EEPathToken   string `json:"e2ee_path_token,omitempty"`
+	ParentID        string `json:"parent_id,omitempty"`
 }
 
 type progressReader struct {
@@ -1530,10 +1570,6 @@ type TeeAttestationResponse struct {
 		EnclavePublicKeyKyber   string `json:"enclave_public_key_kyber"`
 		EnclaveSigningPkEd25519 string `json:"enclave_signing_pk_ed25519"`
 		EnclaveSigningPkMldsa   string `json:"enclave_signing_pk_mldsa"`
-		AttestationMode         string `json:"attestation_mode"`
-		SgxQuote                string `json:"sgx_quote"`
-		Mrenclave               string `json:"mrenclave"`
-		VerificationStatus      string `json:"verification_status"`
 		Busy         bool  `json:"busy"`
 		RetryAfterMs int64 `json:"retry_after_ms"`
 	} `json:"attestation"`
@@ -1625,5 +1661,5 @@ const StaleTeeSealCode = "scanner_unavailable"
 
 func MayBeStaleTeeSeal(err error) bool {
 	var apiErr *APIError
-	return errors.As(err, &apiErr) && apiErr.Code == StaleTeeSealCode
+	return errors.As(err, &apiErr) && (apiErr.Code == StaleTeeSealCode || apiErr.Code == UploadCodeScannerKeyStale)
 }

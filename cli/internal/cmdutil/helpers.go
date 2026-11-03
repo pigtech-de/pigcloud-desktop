@@ -3,6 +3,7 @@ package cmdutil
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"os"
@@ -26,26 +27,27 @@ func RequireLogin(exitFn func()) {
 	}
 }
 
-func IsExistingDirectory(ctx context.Context, remotePath string) bool {
-	if remotePath == "" || remotePath == "/" {
-		return true
+var ErrRemoteMissing = e2ee.ErrRemoteMissing
+
+func RefExecutor() api.Executor { return api.WaitOutRateLimits(api.NewClient()) }
+
+func StatRemote(ctx context.Context, remotePath string) (e2ee.RemoteNode, error) {
+	return e2ee.StatRemote(ctx, RefExecutor(), remotePath)
+}
+
+func IsExistingDirectory(ctx context.Context, remotePath string) (bool, error) {
+	node, err := StatRemote(ctx, remotePath)
+	if errors.Is(err, ErrRemoteMissing) {
+		return false, nil
 	}
-	options := map[string]string{"source": remotePath}
-	AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, func() {})
-	client := api.NewClient()
-	resp, err := client.Execute(ctx, "in", options)
-	if err != nil || resp == nil || !resp.Success {
-		return false
+	if err != nil {
+		return false, err
 	}
-	var payload struct {
-		Details struct {
-			Type string `json:"type"`
-		} `json:"details"`
-	}
-	if err := json.Unmarshal(resp.Raw, &payload); err != nil {
-		return false
-	}
-	return payload.Details.Type == "directory"
+	return node.IsDir, nil
+}
+
+func ResolveDirID(ctx context.Context, remotePath string) (string, error) {
+	return e2ee.ResolveDirID(ctx, RefExecutor(), remotePath)
 }
 
 func ResolvePath(inputPath string) string {
@@ -95,10 +97,24 @@ func stripMSYSConversion(p string) string {
 }
 
 func ExecuteCommand[T any](ctx context.Context, cmd string, options map[string]string, exitFn func()) (*api.Response, T) {
-	var zero T
+	resp, err := api.NewClient().Execute(ctx, cmd, options)
+	return finishCommand[T](resp, err, exitFn)
+}
 
+func ExecuteCreate[T any](ctx context.Context, cmd string, options map[string]string, remint func(map[string]string) error, exitFn func()) (*api.Response, T) {
 	client := api.NewClient()
-	resp, err := client.Execute(ctx, cmd, options)
+	var again func() error
+	if remint != nil {
+		again = func() error { return remint(options) }
+	}
+	resp, err := e2ee.SendCreate(func() (*api.Response, error) {
+		return client.Execute(ctx, cmd, options)
+	}, again)
+	return finishCommand[T](resp, err, exitFn)
+}
+
+func finishCommand[T any](resp *api.Response, err error, exitFn func()) (*api.Response, T) {
+	var zero T
 	if err != nil {
 		output.PrintError("Request failed: " + err.Error())
 		exitFn()

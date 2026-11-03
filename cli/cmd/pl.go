@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"pigcloud/internal/api"
@@ -135,45 +137,26 @@ func runLinkCreate(targetPath string) {
 
 	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfOnly, ExitWithError)
 
-	var linkKeyFragment string
-	var linkKeyRaw []byte
-	if e2ee.HasE2EEKeys() {
-		fragment, sealedLinkKeyB64, nonceB64, rawKey := generateLinkKey(ctx, resolvedPath)
-		if fragment != "" {
-			linkKeyFragment = fragment
-			linkKeyRaw = rawKey
-			options["sealed_link_key"] = sealedLinkKeyB64
-			options["link_key_nonce"] = nonceB64
-		}
-		if linkKeyRaw == nil {
-			rawKey, err := crypto.GenerateDataKey()
-			if err == nil {
-				linkKeyRaw = rawKey
-				linkKeyFragment = base64.RawURLEncoding.EncodeToString(rawKey)
-			}
-		}
-		if linkKeyRaw != nil {
-			encNames := encryptLinkNameFromPath(resolvedPath, linkKeyRaw)
-			if encNames != "" {
-				options["encrypted_names"] = encNames
-			}
-		}
+	linkKey := addLinkKeyMaterial(ctx, resolvedPath, options)
+	if linkKey == nil {
+		return
 	}
 
 	_, payload := cmdutil.ExecuteCommand[api.LinkCreatePayload](ctx, "pl", options, ExitWithError)
+	payload.URL += linkKeyFragment(linkKey)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
 	}
 
-	url := payload.URL
-	if linkKeyFragment != "" {
-		url += "#key=" + linkKeyFragment
-	}
-	fmt.Println(color.CyanString(url))
+	fmt.Println(color.CyanString(payload.URL))
 	if plQR {
-		printLinkQR(url)
+		printLinkQR(payload.URL)
 	}
+}
+
+func linkKeyFragment(linkKey []byte) string {
+	return "#key=" + base64.RawURLEncoding.EncodeToString(linkKey)
 }
 
 func printLinkQR(url string) {
@@ -186,82 +169,154 @@ func printLinkQR(url string) {
 	fmt.Print(qr.ToSmallString(false))
 }
 
-func generateLinkKey(ctx context.Context, filePath string) (string, string, string, []byte) {
-	client := api.NewClient()
+const publicLinkTreeMaxNodes = 2000
 
-	listKeysOpts := map[string]string{"source": filePath}
-	cmdutil.AddPathTokensFor(listKeysOpts, filePath, e2ee.SelfOnly, ExitWithError)
-	keysResp, err := client.Execute(ctx, "e2ee_list_keys", listKeysOpts)
-	if err != nil || !keysResp.Success {
-		return "", "", "", nil
+func addLinkKeyMaterial(ctx context.Context, resolvedPath string, options map[string]string) []byte {
+	pub, priv := cmdutil.GetKeyPair(ExitWithError)
+	if pub == nil || priv == nil {
+		return nil
 	}
-	var keysPayload api.E2EEListKeysPayload
-	if err := json.Unmarshal(keysResp.Raw, &keysPayload); err != nil {
-		return "", "", "", nil
+	root, err := cmdutil.StatRemote(ctx, resolvedPath)
+	if errors.Is(err, cmdutil.ErrRemoteMissing) {
+		err = fmt.Errorf("not found: %s", resolvedPath)
 	}
-	if len(keysPayload.Keys) == 0 {
-		return "", "", "", nil
-	}
-
-	_, privKey := cmdutil.GetKeyPair(ExitWithError)
-
-	sealedBytes, err := base64.StdEncoding.DecodeString(keysPayload.Keys[0].SealedKey)
 	if err != nil {
-		return "", "", "", nil
+		refuseWrite(err)
+		return nil
 	}
-	dataKey, err := crypto.UnsealDataKey(sealedBytes, privKey)
-	if err != nil {
-		return "", "", "", nil
+	listOpts := map[string]string{
+		"source":          resolvedPath,
+		"include_names":   "1",
+		"include_dirs":    "1",
+		"include_parents": "1",
 	}
+	cmdutil.AddPathTokensFor(listOpts, resolvedPath, e2ee.SelfOnly, ExitWithError)
+	_, listed := cmdutil.ExecuteCommand[api.E2EEListKeysPayload](ctx, "e2ee_list_keys", listOpts, ExitWithError)
 
 	linkKey, err := crypto.GenerateDataKey()
-	if err != nil {
-		return "", "", "", nil
+	if err == nil {
+		err = buildLinkKeyMaterial(options, resolvedPath, root, listed.Keys, linkKey, pub, priv)
 	}
-
-	sealedLinkKey, nonce, err := crypto.EncryptWithKey(dataKey, linkKey)
 	if err != nil {
-		return "", "", "", nil
+		refuseWrite(err)
+		return nil
 	}
-
-	linkKeyB64URL := base64.RawURLEncoding.EncodeToString(linkKey)
-	sealedLinkKeyB64 := base64.StdEncoding.EncodeToString(sealedLinkKey)
-	nonceB64 := base64.StdEncoding.EncodeToString(nonce)
-
-	return linkKeyB64URL, sealedLinkKeyB64, nonceB64, linkKey
+	return linkKey
 }
 
-func encryptLinkNameFromPath(filePath string, linkKey []byte) string {
-	parts := strings.Split(strings.Trim(filePath, "/"), "/")
-	if len(parts) == 0 {
-		return ""
+type linkSnapshotNode struct {
+	CT string `json:"ct"`
+	N  string `json:"n"`
+	D  int    `json:"d"`
+	P  string `json:"p"`
+	K  string `json:"k,omitempty"`
+	KN string `json:"kn,omitempty"`
+}
+
+func buildLinkKeyMaterial(options map[string]string, resolvedPath string, root e2ee.RemoteNode, entries []api.E2EEKeyEntry, linkKey []byte, pub *crypto.PublicKeySet, priv *crypto.PrivateKeySet) error {
+	underLink := func(plain []byte) (string, string, error) {
+		ct, nonce, err := crypto.EncryptWithKey(plain, linkKey)
+		return base64.StdEncoding.EncodeToString(ct), base64.StdEncoding.EncodeToString(nonce), err
 	}
-	name := parts[len(parts)-1]
-	if name == "" {
-		return ""
+	rootID := strings.ToLower(root.ID)
+	var rootEntry *api.E2EEKeyEntry
+	var members []api.E2EEKeyEntry
+	for i := range entries {
+		switch {
+		case rootID != "" && strings.ToLower(entries[i].NodeID) == rootID:
+			rootEntry = &entries[i]
+		case root.IsDir && !entries[i].IsTrashed:
+			members = append(members, entries[i])
+		}
+	}
+	if rootEntry == nil {
+		return fmt.Errorf("not found: %s", resolvedPath)
+	}
+	if len(members) > publicLinkTreeMaxNodes {
+		return fmt.Errorf("folder too large for a public link: links hold up to %d items", publicLinkTreeMaxNodes)
 	}
 
-	ct, nonce, err := crypto.EncryptWithKey([]byte(name), linkKey)
+	rootName, err := unsealEntryName(rootEntry, priv)
 	if err != nil {
-		return ""
+		return err
 	}
-
-	type encEntry struct {
-		CT string `json:"ct"`
-		N  string `json:"n"`
-	}
-	result := map[string]encEntry{
-		"root": {
-			CT: base64.StdEncoding.EncodeToString(ct),
-			N:  base64.StdEncoding.EncodeToString(nonce),
-		},
-	}
-
-	data, err := json.Marshal(result)
+	rootCT, rootN, err := underLink([]byte(rootName))
 	if err != nil {
-		return ""
+		return err
 	}
-	return string(data)
+	snapshot := map[string]any{"v": 3, "root": map[string]string{"ct": rootCT, "n": rootN}}
+	if !root.IsDir {
+		dataKey, err := unsealEntryDataKey(rootEntry, priv)
+		if err != nil {
+			return err
+		}
+		if options["sealed_link_key"], options["link_key_nonce"], err = underLink(dataKey); err != nil {
+			return err
+		}
+	}
+	for i := range members {
+		node, err := buildLinkSnapshotNode(&members[i], priv, underLink)
+		if err != nil {
+			return err
+		}
+		snapshot[strings.ToLower(members[i].NodeID)] = node
+	}
+	encoded, err := json.Marshal(snapshot)
+	if err != nil {
+		return err
+	}
+
+	accessHash, err := crypto.PublicLinkAccessHash(linkKey)
+	if err != nil {
+		return err
+	}
+	ownerSealed, err := crypto.SealDataKey(linkKey, pub)
+	if err != nil {
+		return err
+	}
+	options["encrypted_names"] = string(encoded)
+	options["access_hash"] = base64.StdEncoding.EncodeToString(accessHash)
+	options["owner_sealed_link_key"] = base64.StdEncoding.EncodeToString(ownerSealed)
+	return nil
+}
+
+func buildLinkSnapshotNode(entry *api.E2EEKeyEntry, priv *crypto.PrivateKeySet, underLink func([]byte) (string, string, error)) (linkSnapshotNode, error) {
+	name, err := unsealEntryName(entry, priv)
+	if err != nil {
+		return linkSnapshotNode{}, err
+	}
+	node := linkSnapshotNode{P: strings.ToLower(entry.ParentID)}
+	if node.CT, node.N, err = underLink([]byte(name)); err != nil {
+		return linkSnapshotNode{}, err
+	}
+	if entry.IsDir {
+		node.D = 1
+		return node, nil
+	}
+	dataKey, err := unsealEntryDataKey(entry, priv)
+	if err != nil {
+		return linkSnapshotNode{}, err
+	}
+	if node.K, node.KN, err = underLink(dataKey); err != nil {
+		return linkSnapshotNode{}, err
+	}
+	return node, nil
+}
+
+func unsealEntryName(entry *api.E2EEKeyEntry, priv *crypto.PrivateKeySet) (string, error) {
+	sealed, err := base64.StdEncoding.DecodeString(entry.E2EEDisplayName)
+	if err != nil {
+		return "", err
+	}
+	return crypto.UnsealDisplayName(sealed, priv)
+}
+
+func unsealEntryDataKey(entry *api.E2EEKeyEntry, priv *crypto.PrivateKeySet) ([]byte, error) {
+	sealed, err := base64.StdEncoding.DecodeString(entry.SealedKey)
+	if err != nil {
+		return nil, err
+	}
+	return crypto.UnsealDataKey(sealed, priv)
 }
 
 func runLinkGet(targetPath string) {
@@ -343,9 +398,69 @@ func runLinkList() {
 		link := &payload.Links[i]
 		link.E2EEDisplayName = e2ee.ResolveName(link.E2EEDisplayName, "")
 	}
+	keyed := restoreOwnerLinkURLs(payload.Links)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
 	}
+	patchLinkListURLs(resp, payload.Links, keyed)
 	cmdutil.RenderServerDisplay(resp)
+}
+
+func restoreOwnerLinkURLs(links []api.LinkListItem) []bool {
+	keyed := make([]bool, len(links))
+	if !e2ee.HasE2EEKeys() {
+		return keyed
+	}
+	var priv *crypto.PrivateKeySet
+	for i := range links {
+		sealed, err := base64.StdEncoding.DecodeString(links[i].OwnerSealedLinkKey)
+		if err != nil || len(sealed) == 0 {
+			continue
+		}
+		if priv == nil {
+			if _, priv, err = e2ee.GetKeyPair(); err != nil {
+				return keyed
+			}
+		}
+		linkKey, err := crypto.UnsealDataKey(sealed, priv)
+		if err != nil || len(linkKey) != crypto.KeySize {
+			continue
+		}
+		links[i].URL += linkKeyFragment(linkKey)
+		keyed[i] = true
+	}
+	return keyed
+}
+
+func patchLinkListURLs(resp *api.Response, links []api.LinkListItem, keyed []bool) {
+	if resp == nil || !slices.Contains(keyed, true) {
+		return
+	}
+	var raw map[string]json.RawMessage
+	if json.Unmarshal(resp.Raw, &raw) != nil {
+		return
+	}
+	var blocks []output.DisplayBlock
+	if json.Unmarshal(raw["_display"], &blocks) != nil {
+		return
+	}
+	for b := range blocks {
+		if blocks[b].Type != "table" || len(blocks[b].Rows) != len(links) {
+			continue
+		}
+		for i, row := range blocks[b].Rows {
+			if keyed[i] && len(row) > 0 {
+				row[len(row)-1] = output.DisplayCell{Text: links[i].URL, Style: "accent"}
+			}
+		}
+	}
+	patched, err := json.Marshal(blocks)
+	if err != nil {
+		return
+	}
+	raw["_display"] = patched
+	if encoded, err := json.Marshal(raw); err == nil {
+		resp.Raw = encoded
+	}
 }

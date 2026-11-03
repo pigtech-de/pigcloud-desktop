@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"pigcloud/internal/config"
 	"pigcloud/internal/netutil"
 	"runtime"
 	"strconv"
@@ -71,29 +72,16 @@ type DaemonResponse struct {
 	LastPoll            string `json:"last_poll,omitempty"`
 	Uptime              string `json:"uptime,omitempty"`
 	Cleaned             int    `json:"cleaned,omitempty"`
+	WatcherDegraded     bool   `json:"watcher_degraded,omitempty"`
+	WatcherError        string `json:"watcher_error,omitempty"`
+	MassDeleteHeld      int    `json:"mass_delete_held,omitempty"`
 
 	Files    []FileEntry     `json:"files,omitempty"`
 	Activity []ActivityEvent `json:"activity,omitempty"`
 }
 
 func mountFilePath() string {
-	return filepath.Join(ConfigDir(), "mount.json")
-}
-
-func ConfigDir() string {
-	if runtime.GOOS == "windows" {
-		dir := os.Getenv("APPDATA")
-		if dir == "" {
-			dir = filepath.Join(os.Getenv("USERPROFILE"), "AppData", "Roaming")
-		}
-		return filepath.Join(dir, "pigcloud")
-	}
-	dir := os.Getenv("XDG_CONFIG_HOME")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(dir, "pigcloud")
+	return config.PathFor("mount.json")
 }
 
 func DataDir() string {
@@ -104,7 +92,7 @@ func DataDir() string {
 		}
 		return filepath.Join(dir, "pigcloud")
 	}
-	return ConfigDir()
+	return config.DefaultDir()
 }
 
 func CleanStaleMountCaches(current string) {
@@ -146,6 +134,10 @@ func SendRequestWithPath(info *MountInfo, action, path string) (*DaemonResponse,
 
 func SendRetry(info *MountInfo, path string) (*DaemonResponse, error) {
 	return sendRequest(DaemonRequest{Token: info.Token, Action: "retry", Path: path}, info)
+}
+
+func SendRelease(info *MountInfo, choice string) (*DaemonResponse, error) {
+	return sendRequest(DaemonRequest{Token: info.Token, Action: "release", Choice: choice}, info)
 }
 
 func SendResolve(info *MountInfo, path, choice string) (*DaemonResponse, error) {

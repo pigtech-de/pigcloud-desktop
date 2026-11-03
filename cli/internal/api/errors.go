@@ -12,10 +12,12 @@ import (
 )
 
 const (
-	UploadCodeDuplicate   = "duplicate"
-	UploadCodeRateLimited = "rate_limited"
-	UploadCodeScanPending = "scan_pending"
-	UploadCodeScannerBusy = "scanner_busy"
+	UploadCodeDuplicate        = "duplicate"
+	UploadCodeInvalidUploadDir = "invalid_upload_dir"
+	UploadCodeRateLimited      = "rate_limited"
+	UploadCodeScanPending      = "scan_pending"
+	UploadCodeScannerBusy      = "scanner_busy"
+	UploadCodeScannerKeyStale  = "scanner_key_stale"
 )
 
 type ErrorKind int
@@ -38,6 +40,8 @@ func (e *RequestError) Error() string { return e.Err.Error() }
 func (e *RequestError) Unwrap() error { return e.Err }
 
 var ErrInMemoryDownloadTooLarge = errors.New("file exceeds in-memory download limit")
+
+var ErrDownloadTooLarge = errors.New("download body exceeds the size limit")
 
 func IsRateLimited(err error) bool {
 	var reqErr *RequestError

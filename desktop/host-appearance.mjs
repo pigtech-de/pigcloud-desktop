@@ -1,6 +1,6 @@
 import {syncBusy} from './host-updates.mjs';
 
-export const SYSTEM_GROUND = Object.freeze({light: '#F1F2F8', dark: '#121212'});
+export const SYSTEM_GROUND = Object.freeze({light: '#E8EAF1', dark: '#121212'});
 export const JUMP_ARGUMENTS = Object.freeze({cloud: '--open-cloud', sync: '--open-sync', toggle: '--toggle-sync'});
 const RUNNING_STATES = new Set(['running', 'starting']);
 

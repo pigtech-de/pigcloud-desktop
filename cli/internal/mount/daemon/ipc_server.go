@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"time"
 
@@ -23,6 +24,27 @@ func deferredQueue(db *cache.DB) (int, int) {
 		return count, 0
 	}
 	return count, int(next - horizon)
+}
+
+func statusBase(db *cache.DB, store *cache.Store, poller *syncer.Poller, startedAt time.Time) mount.DaemonResponse {
+	pending, _ := db.PendingWritebackCount()
+	failed, _ := db.FailedWritebackCount()
+	deferred, nextDue := deferredQueue(db)
+	lastPoll := ""
+	if t := poller.LastPoll(); !t.IsZero() {
+		lastPoll = fmt.Sprintf("%ds ago", int(time.Since(t).Seconds()))
+	}
+	return mount.DaemonResponse{
+		OK:             true,
+		Online:         poller.IsOnline(),
+		CacheUsed:      cache.CacheBytes(db, store),
+		PendingCount:   pending,
+		FailedCount:    failed,
+		DeferredCount:  deferred,
+		NextDueSeconds: nextDue,
+		LastPoll:       lastPoll,
+		Uptime:         time.Since(startedAt).Round(time.Second).String(),
+	}
 }
 
 type ipcHost interface {
@@ -55,7 +77,7 @@ func acceptIPC(h ipcHost, listener net.Listener) {
 				return
 			}
 			delay := backoff.Next()
-			mlog.Warnf("%s: accept failed, retrying in %v: %v", h.ipcName(), delay, err)
+			mlog.Warnf("%s: accept failed, retrying in %v: %s", h.ipcName(), delay, mlog.Cause(err))
 			select {
 			case <-h.ipcShutdownCh():
 				return

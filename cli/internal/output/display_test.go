@@ -67,7 +67,7 @@ func legacyLs(path string, entries []lsEntry, resolve NameResolver, long bool) s
 	for _, e := range entries {
 		name := FormatType(e.fileType, resolve(e.sealed))
 		shareText, shareStyle := sharedCell(e)
-		shared := applyStyle(shareStyle, shareText)
+		shared := Styled(shareStyle, shareText)
 		if long {
 			sizeBytes := ""
 			if e.size != nil {

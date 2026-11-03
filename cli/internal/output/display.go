@@ -93,7 +93,7 @@ func RenderDisplay(w io.Writer, blocks []DisplayBlock, resolveName NameResolver)
 		case "heading":
 			fmt.Fprintln(w, headingText(b.Style, b.Text))
 		case "text":
-			fmt.Fprintln(w, applyStyle(b.Style, b.Text))
+			fmt.Fprintln(w, Styled(b.Style, b.Text))
 		case "table":
 			renderTable(w, b.Headers, b.Rows, resolveName)
 		case "keyvalue":
@@ -151,9 +151,9 @@ func (c DisplayCell) resolve(resolveName NameResolver) string {
 	case c.Name != "":
 		return FormatType(c.FileType, resolveName.name(c.Name))
 	case c.Format != "":
-		return applyStyle(c.Style, formatValue(c.Format, c.Value))
+		return Styled(c.Style, formatValue(c.Format, c.Value))
 	default:
-		return applyStyle(c.Style, c.Text)
+		return Styled(c.Style, c.Text)
 	}
 }
 
@@ -183,10 +183,10 @@ func headingText(style, text string) string {
 	if style == "path" {
 		return PrintPath(text)
 	}
-	return applyStyle(style, text)
+	return Styled(style, text)
 }
 
-func applyStyle(style, s string) string {
+func Styled(style, s string) string {
 	switch style {
 	case "info", "accent":
 		return color.CyanString(s)

@@ -33,6 +33,7 @@ type webUploadResult struct {
 	Success      bool         `json:"success"`
 	Error        string       `json:"error"`
 	ErrorCode    string       `json:"errorCode"`
+	ErrorClass   string       `json:"errorClass"`
 	NodeID       string       `json:"nodeId"`
 	ETag         string       `json:"etag,omitempty"`
 	Storage      StorageState `json:"storage"`
@@ -159,6 +160,8 @@ var webUploadFields = map[string]string{
 	"source_mtime":           "source_mtime",
 	"captured_at":            "captured_at",
 	"upload_idempotency_key": "upload_idempotency_key",
+	"e2ee_node_id":           "e2ee_node_id",
+	"e2ee_sealed_parent":     "e2ee_sealed_parent",
 }
 
 func UploadIsChunked(size int64) bool {
@@ -362,6 +365,7 @@ func duplicateUnderForce(err error, options map[string]string) error {
 	}
 	replaced := &APIError{
 		Code:    apiErr.Code,
+		Class:   apiErr.Class,
 		Message: "a file with that name already exists, and --force cannot create a same-name copy for files this large. Re-run without --force to store this upload as a new version, or rename the file first.",
 	}
 	var reqErr *RequestError
@@ -421,7 +425,7 @@ func (c *Client) postUploadForm(ctx context.Context, session *webUploadSession, 
 			Kind:       uploadRejectionKind(resp.StatusCode, result.ErrorCode),
 			StatusCode: resp.StatusCode,
 			RetryAfter: retryAfterHeader(resp),
-			Err:        &APIError{Code: result.ErrorCode, Message: message},
+			Err:        &APIError{Code: result.ErrorCode, Class: result.ErrorClass, Message: message},
 		}
 	}
 	result.Raw = respBody

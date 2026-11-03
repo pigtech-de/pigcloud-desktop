@@ -24,8 +24,8 @@ window.PigcloudSettingsSync = (() => {
         result.dataset.translateKey = key;
         return result;
     };
-    function button(key, action, icon = "fa-check", primary = false) {
-        const result = element("button", "btn " + (primary ? "btn-primary" : "btn-tonal"));
+    function button(key, action, icon = "fa-check") {
+        const result = element("button", "btn");
         result.type = "button";
         result.dataset.syncAction = action;
         const glyph = element("i", "fa-solid " + icon);
@@ -88,8 +88,7 @@ window.PigcloudSettingsSync = (() => {
     const CAMERA_ROLL_SHED_REASONS = new Set(["shed"]);
     const CAMERA_ROLL_PAUSE_KEYS = {daily_limit: "syncCameraRollDailyLimit", needs_foreground: "syncCameraRollNeedsForeground"};
     function clockTime(ms) {
-        const lang = window.currentLanguage || document.documentElement.lang || "de";
-        return new Date(ms).toLocaleTimeString(lang === "de" ? "de-DE" : "en-US", {hour: "2-digit", minute: "2-digit"});
+        return window.PigcloudSharedUtil.formatDateTimeDisplay(ms, {date: false, time: true});
     }
     function cameraRollRateLimited(snapshot, now) {
         const until = Number(snapshot?.rateLimitedUntil) || 0;
@@ -193,16 +192,13 @@ window.PigcloudSettingsSync = (() => {
         const notice = element("p", "field-status status-warning");
         notice.id = "sync-notice";
         notice.setAttribute("aria-live", "polite");
-        const feedback = element("p", "field-status status-idle");
-        feedback.id = "sync-feedback";
-        feedback.setAttribute("aria-live", "polite");
         const refreshIssue = element("p", "field-status status-warning");
         refreshIssue.id = "sync-refresh-issue";
         refreshIssue.setAttribute("aria-live", "polite");
         const controls = element("div", "account-security-actions");
-        controls.append(button("syncStartAll", "start", "fa-play", true), button("syncStopAll", "stop", "fa-stop"), button("syncRefresh", "refresh", "fa-rotate"));
-        if (typeof engine.unlock === "function") controls.append(button("syncUnlock", "unlock", "fa-lock-open", true));
-        if (typeof engine.loginCli === "function") controls.append(button("syncConnect", "connect", "fa-link", true));
+        controls.append(button("syncStartAll", "start", "fa-play"), button("syncStopAll", "stop", "fa-stop"), button("syncRefresh", "refresh", "fa-rotate"));
+        if (typeof engine.unlock === "function") controls.append(button("syncUnlock", "unlock", "fa-lock-open"));
+        if (typeof engine.loginCli === "function") controls.append(button("syncConnect", "connect", "fa-link"));
         if (typeof engine.cancelLoginCli === "function") {
             const cancel = button("syncCancel", "cancel-connect", "fa-xmark");
             cancel.hidden = true;
@@ -210,7 +206,7 @@ window.PigcloudSettingsSync = (() => {
         }
         const stopHelp = element("p", "text-small text-muted");
         stopHelp.append(label("syncStopAllDescription"));
-        statusSection.append(status, notice, controls, stopHelp, feedback, refreshIssue);
+        statusSection.append(status, notice, controls, stopHelp, refreshIssue);
         const pairsSection = section("syncPairsTitle", "fa-folder");
         const pairsList = list();
         pairsList.id = "sync-pairs";
@@ -224,7 +220,7 @@ window.PigcloudSettingsSync = (() => {
         local.input.readOnly = capabilities.folderPicker && typeof engine.pickFolder === "function";
         const editorControls = element("div", "account-form-actions");
         if (capabilities.folderPicker && typeof engine.pickFolder === "function") local.wrapper.append(button("syncBrowse", "browse", "fa-folder-open"));
-        editorControls.append(button("syncCancel", "cancel-pair", "fa-xmark"), button("syncSave", "save-pair", "fa-check", true));
+        editorControls.append(button("syncCancel", "cancel-pair", "fa-xmark"), button("syncSave", "save-pair", "fa-check"));
         editorSection.append(remote.wrapper, local.wrapper, editorControls);
         const optionsSection = section("syncOptionsTitle", "fa-sliders");
         const poll = field("syncPollInterval", "sync-poll-interval", "number");
@@ -242,7 +238,7 @@ window.PigcloudSettingsSync = (() => {
         if (capabilities.tray) optionsSection.append(tray.wrapper);
         if (capabilities.updates) optionsSection.append(preview.wrapper);
         const optionControls = element("div", "account-form-actions");
-        optionControls.append(button("syncSave", "save-options", "fa-check", true));
+        optionControls.append(button("syncSave", "save-options", "fa-check"));
         optionsSection.append(optionControls);
         const engineSection = section("syncEngineTitle", "fa-gear");
         const engineControls = element("div", "account-security-actions");
@@ -253,7 +249,7 @@ window.PigcloudSettingsSync = (() => {
         updateState.setAttribute("aria-live", "polite");
         updateState.hidden = true;
         if (typeof engine.checkUpdates === "function") engineControls.append(button("syncCheckUpdates", "check-updates", "fa-rotate"));
-        if (typeof engine.installUpdate === "function") engineControls.append(button("syncRestartUpdate", "install-update", "fa-power-off", true));
+        if (typeof engine.installUpdate === "function") engineControls.append(button("syncRestartUpdate", "install-update", "fa-power-off"));
         if (typeof engine.openUpdates === "function") engineControls.append(button("syncUpdates", "updates", "fa-download"));
         engineSection.append(cli, updateState, engineControls);
         const detailsSection = section("syncDetailsTitle");
@@ -277,8 +273,10 @@ window.PigcloudSettingsSync = (() => {
         const feedSelector = element("div", "form-field vstack");
         feedSelector.append(feedLabel, feedSelect.el);
         detailsSection.append(feedSelector);
+        let feedChoicesKey = "";
         feedSelect.addEventListener("change", () => {
             for (const [kind, group] of Object.entries(feedGroups)) group.hidden = kind !== feedSelect.value;
+            if (selection && feeds[feedSelect.value] === null) refresh().catch(() => { refreshIssue.textContent = tr("syncRefreshFailed"); });
         });
         for (const kind of ["conflicts", "activity", "files"]) {
             const group = section({conflicts: "syncConflictsTitle", activity: "syncActivityTitle", files: "syncFilesTitle"}[kind]);
@@ -322,7 +320,7 @@ window.PigcloudSettingsSync = (() => {
         const hasQueue = typeof cameraRoll?.backUpNow === "function";
         const cameraRollActions = element("div", "account-security-actions");
         cameraRollActions.append(
-            ...(hasQueue ? [button("syncCameraRollBackUpNow", "back-up-camera-roll", "fa-cloud-arrow-up", true)] : []),
+            ...(hasQueue ? [button("syncCameraRollBackUpNow", "back-up-camera-roll", "fa-cloud-arrow-up")] : []),
             ...(typeof cameraRoll?.requestMediaAccess === "function" ? [button("syncCameraRollAllowAccess", "camera-roll-access", "fa-images")] : []),
             button("syncCameraRollCancel", "cancel-camera-roll", "fa-xmark"),
             button("syncCameraRollRevoke", "revoke-camera-roll", "fa-trash-can"),
@@ -343,7 +341,7 @@ window.PigcloudSettingsSync = (() => {
 
         let cameraRollSnapshot = null;
         let cameraRollBusy = false;
-        let cameraRollCancelled = false;
+        let cameraRollRun = 0;
         let cameraRollStepKey = "";
         let cameraRollIssueKey = "";
 
@@ -352,9 +350,8 @@ window.PigcloudSettingsSync = (() => {
             ...(hasCameraRoll ? [cameraRollSection] : []),
         );
 
-        function message(key, error = false) {
-            feedback.textContent = tr(key);
-            feedback.className = "field-status " + (error ? "status-error" : "status-valid");
+        function message(key, tone = "success") {
+            window.showToast(tr(key), tone);
         }
         function current(captured) {
             return !disposed && active && captured.epoch === epoch && captured.revision === settings?.revision;
@@ -364,6 +361,16 @@ window.PigcloudSettingsSync = (() => {
         function stateLabel(value) {
             const key = {running: "syncRunning", stopped: "syncStopped", starting: "syncStarting", stopping: "syncStopping", locked: "syncLocked", error: "syncError", idle: "syncIdle", offline: "syncOffline", unavailable: "syncUnavailable", noCli: "syncMissingCli", notConfigured: "syncLoginRequired", unsupportedEndpoint: "syncUnsupportedEndpoint", failed: "syncError", stale: "syncStale", mismatch: "syncMismatch"}[value];
             return key ? tr(key) : String(value || tr("syncUnavailable"));
+        }
+        function stateTone(value) {
+            return "field-status " + ({running: "status-valid", starting: "status-checking", stopping: "status-checking", locked: "status-warning", stale: "status-warning", noCli: "status-warning", notConfigured: "status-warning", offline: "status-warning", mismatch: "status-error", failed: "status-error", error: "status-error", unsupportedEndpoint: "status-error"}[value] || "status-idle");
+        }
+        function retryLabel(seconds) {
+            return seconds < 120 ? tr("syncNextRetry", {seconds}) : tr("syncNextRetryMinutes", {count: Math.ceil(seconds / 60)});
+        }
+        function fileStateLabel(value) {
+            const key = {synced: "syncFileSynced", pending: "syncFilePending", rejected: "syncFileRejected", failed: "syncFileFailed", conflict: "syncFileConflict", offline: "syncFileOffline"}[value];
+            return key ? tr(key) : String(value || "");
         }
         function updateLabel(value) {
             if (!value || typeof value.state !== "string") return "";
@@ -377,8 +384,10 @@ window.PigcloudSettingsSync = (() => {
             return key ? tr(key, {version: value.version, percent: value.percent}) : "";
         }
         function nativeMessage(value) {
-            if (!value || typeof value.code !== "string" || !value.code) return "";
-            const key = "syncNative" + value.code.charAt(0).toUpperCase() + value.code.slice(1);
+            const code = typeof value?.code === "string" && value.code ? value.code
+                : /^pigcloud-native:([A-Za-z]+)$/.exec(String(value?.message || ""))?.[1];
+            if (!code) return "";
+            const key = "syncNative" + code.charAt(0).toUpperCase() + code.slice(1);
             const translated = tr(key);
             return translated && translated !== key ? translated : "";
         }
@@ -388,11 +397,7 @@ window.PigcloudSettingsSync = (() => {
             return nativeMessage(value) || value?.message || "";
         }
         function actionFailure(error) {
-            const translated = nativeMessage(error);
-            if (translated) {
-                feedback.textContent = translated;
-                feedback.className = "field-status status-error";
-            } else message("syncActionFailed", true);
+            window.showToast(nativeMessage(error) || tr("syncActionFailed"), "error");
         }
         function checkAccount() {
             const owner = settings?.accountOwner || "";
@@ -423,8 +428,7 @@ window.PigcloudSettingsSync = (() => {
         }
         function activityTime(timestamp) {
             if (!Number.isFinite(timestamp)) return "";
-            const date = new Date(timestamp * 1000);
-            return Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(document.documentElement.lang || undefined, {dateStyle: "short", timeStyle: "short"}).format(date) : "";
+            return window.PigcloudSharedUtil.formatDateTimeDisplay(timestamp * 1000, {date: "short", time: true});
         }
         function updateDisabled() {
             for (const control of panel.querySelectorAll("button[data-sync-action]")) {
@@ -487,7 +491,9 @@ window.PigcloudSettingsSync = (() => {
                         entry.append(actions);
                     } else {
                         const directionKey = {upload: "syncUploaded", download: "syncDownloaded", delete: "syncDeleted"}[item.direction];
-                        entry.append(element("div", "account-security-meta", [directionKey ? tr(directionKey) : item.action || item.state || item.status, activityTime(item.timestamp), detailText(item.error || item.message || item.reason)].filter(Boolean).join(" | ")));
+                        const what = directionKey ? tr(directionKey) : kind === "files" ? fileStateLabel(item.status) : item.action || item.state || item.status;
+                        const size = Number(item.bytes ?? item.size) > 0 ? window.PigcloudSharedUtil.formatFileSize(Number(item.bytes ?? item.size)) : "";
+                        entry.append(element("div", "account-security-meta", [what, size, activityTime(item.timestamp), detailText(item.error || item.message || item.reason)].filter(Boolean).join(" | ")));
                         if (kind === "files" && (item.error || item.status === "failed" || item.state === "failed")) {
                             const retry = button("syncRetry", "retry", "fa-rotate");
                             retry.dataset.pairId = selection;
@@ -499,11 +505,12 @@ window.PigcloudSettingsSync = (() => {
                 }
                 restoreAction(body, focused);
             }
+            renderFeedChoices();
             updateDisabled();
         }
         function renderPairs() {
             const pairs = settings?.pairs || [];
-            const renderKey = JSON.stringify([pairs, snapshot?.pairs?.map(pair => ({id: pair.id, state: pair.state, error: pair.error, pending: pair.status?.pendingCount, failed: pair.status?.failedCount, downloads: pair.status?.failedDownloadCount, deferred: pair.status?.deferredCount, due: pair.status?.nextDueSeconds, online: pair.status?.online})), tr("syncStart")]);
+            const renderKey = JSON.stringify([pairs, snapshot?.pairs?.map(pair => ({id: pair.id, state: pair.state, error: pair.error, pending: pair.status?.pendingCount, failed: pair.status?.failedCount, downloads: pair.status?.failedDownloadCount, deferred: pair.status?.deferredCount, due: pair.status?.nextDueSeconds, online: pair.status?.online, watcher: pair.status?.watcherError || pair.status?.watcherDegraded, held: pair.status?.massDeleteHeld})), tr("syncStart")]);
             if (pairRenderKey === renderKey) {
                 if (pairSelect) pairSelect.value = selection;
                 updateDisabled();
@@ -520,16 +527,32 @@ window.PigcloudSettingsSync = (() => {
                 const entry = row(displayPath(pair.remotePath));
                 entry.append(element("div", "account-security-meta", displayPath(pair.mountPoint)));
                 const pairState = snapshot?.pairs?.find(item => item.id === pair.id);
-                entry.append(element("p", "field-status status-idle", stateLabel(pairState?.state)));
+                const counts = pairState?.status ? {
+                    pending: pairState.status.pendingCount || 0,
+                    failed: (pairState.status.failedCount || 0) + (pairState.status.failedDownloadCount || 0),
+                    deferred: pairState.status.deferredCount || 0,
+                } : null;
+                const settled = pairState?.state === "running" && counts && !counts.pending && !counts.failed && !counts.deferred && pairState.status.online !== false && !pairState.status.watcherDegraded && !(pairState.status.massDeleteHeld > 0);
+                entry.append(element("p", stateTone(pairState?.state), settled ? tr("syncUpToDate") : stateLabel(pairState?.state)));
                 if (pairState?.error) entry.append(element("p", "field-status status-error", detailText(pairState.error)));
-                if (pairState?.status) {
-                    entry.append(element("div", "account-security-meta", tr("syncCounts", {
-                        pending: pairState.status.pendingCount || 0,
-                        failed: (pairState.status.failedCount || 0) + (pairState.status.failedDownloadCount || 0),
-                        deferred: pairState.status.deferredCount || 0,
-                    })));
+                if (counts && !settled) {
+                    if (counts.pending || counts.failed || counts.deferred) {
+                        entry.append(element("p", counts.failed ? "field-status status-warning" : "field-status status-idle", tr("syncCounts", counts)));
+                    }
                     if (pairState.status.online === false) entry.append(element("p", "field-status status-warning", tr("syncOffline")));
-                    if (pairState.status.nextDueSeconds > 0) entry.append(element("div", "account-security-meta", tr("syncNextRetry", {seconds: pairState.status.nextDueSeconds})));
+                    if (pairState.status.watcherDegraded) entry.append(element("p", "field-status status-warning", tr(pairState.status.watcherError === "watch_limit" ? "syncWatcherLimit" : "syncWatcherFailed")));
+                    if (pairState.status.massDeleteHeld > 0 && typeof engine.release === "function") {
+                        entry.append(element("p", "field-status status-warning", tr("syncDeletesHeld", {count: pairState.status.massDeleteHeld})));
+                        const held = element("div", "account-security-actions");
+                        for (const [key, choice, icon] of [["syncDeletesRestore", "restore", "fa-rotate-left"], ["syncDeletesConfirm", "delete", "fa-trash-can"]]) {
+                            const control = button(key, "release", icon);
+                            control.dataset.pairId = pair.id;
+                            control.dataset.choice = choice;
+                            held.append(control);
+                        }
+                        entry.append(held);
+                    }
+                    if (pairState.status.nextDueSeconds > 0) entry.append(element("div", "account-security-meta", retryLabel(pairState.status.nextDueSeconds)));
                 }
                 const actions = element("div", "account-security-actions");
                 for (const [key, action, icon] of [["syncStart", "start", "fa-play"], ["syncStop", "stop", "fa-stop"], ["syncDetails", "details", "fa-list"]]) {
@@ -569,21 +592,27 @@ window.PigcloudSettingsSync = (() => {
             updateDisabled();
             restoreAction(pairsList, focused);
         }
+        function cameraRollForeign() {
+            return webAccount && !!cameraRollSnapshot?.enrolled
+                && (ownerRefreshing || ownerRefreshFailed || (cameraRollSnapshot.account || "") !== expectedOwner);
+        }
         function renderCameraRoll() {
             if (!hasCameraRoll) return;
             const enrolled = !!cameraRollSnapshot?.enrolled;
+            const foreign = cameraRollForeign();
             const on = enrolled && !!cameraRollSnapshot?.uploadEnabled;
             const reenrolNeeded = !enrolled && cameraRollSnapshot?.state === "reenrolNeeded";
             const paused = on && cameraRollSnapshot?.state === "paused";
             const unreachable = paused && CAMERA_ROLL_UNREACHABLE_REASONS.has(cameraRollSnapshot?.pauseReason || "unreachable");
             cameraRollToggle.input.checked = on;
-            cameraRollToggle.input.disabled = cameraRollBusy;
+            cameraRollToggle.input.disabled = cameraRollBusy || foreign;
             cameraRollStatus.textContent = cameraRollSnapshot === null ? tr("syncLoading")
+                : foreign ? tr("syncCameraRollOtherAccount")
                 : reenrolNeeded ? tr("syncCameraRollReenrol")
                 : unreachable ? tr("syncCameraRollUnreachable")
                 : paused ? tr("syncCameraRollConfirming")
                 : on ? tr("syncCameraRollEnrolled") : enrolled ? tr("syncCameraRollPaused") : tr("syncCameraRollOff");
-            cameraRollStatus.className = "field-status " + (reenrolNeeded ? "status-error" : paused ? "status-checking" : "status-idle");
+            cameraRollStatus.className = "field-status " + (foreign ? "status-warning" : reenrolNeeded ? "status-error" : paused ? "status-checking" : on ? "status-valid" : "status-idle");
             cameraRollStep.textContent = cameraRollStepKey ? tr(cameraRollStepKey) : "";
             cameraRollStep.hidden = !cameraRollStepKey;
             cameraRollIssue.textContent = cameraRollIssueKey ? tr(cameraRollIssueKey) : "";
@@ -591,7 +620,7 @@ window.PigcloudSettingsSync = (() => {
             cameraRollSection.querySelector('[data-sync-action="cancel-camera-roll"]').hidden = !cameraRollBusy;
             const revoke = cameraRollSection.querySelector('[data-sync-action="revoke-camera-roll"]');
             revoke.hidden = !enrolled;
-            revoke.disabled = cameraRollBusy;
+            revoke.disabled = cameraRollBusy || foreign;
 
             const activity = on && hasQueue ? cameraRollActivity(cameraRollSnapshot) : null;
             cameraRollQueue.hidden = !activity || paused;
@@ -612,16 +641,16 @@ window.PigcloudSettingsSync = (() => {
             });
             cameraRollCharging.wrapper.hidden = !enrolled;
             cameraRollCharging.input.checked = !!cameraRollSnapshot?.requiresCharging;
-            cameraRollCharging.input.disabled = cameraRollBusy;
+            cameraRollCharging.input.disabled = cameraRollBusy || foreign;
             const backUp = cameraRollSection.querySelector('[data-sync-action="back-up-camera-roll"]');
             if (backUp) {
                 backUp.hidden = !on;
-                backUp.disabled = cameraRollBusy;
+                backUp.disabled = cameraRollBusy || foreign;
             }
             const access = cameraRollSection.querySelector('[data-sync-action="camera-roll-access"]');
             if (access) {
                 access.hidden = !(on && ["none", "partial"].includes(cameraRollSnapshot?.access));
-                access.disabled = cameraRollBusy;
+                access.disabled = cameraRollBusy || foreign;
             }
         }
         async function refreshCameraRoll() {
@@ -634,17 +663,18 @@ window.PigcloudSettingsSync = (() => {
             }
             renderCameraRoll();
         }
-        async function enrolCameraRoll() {
+        async function enrolCameraRoll(run) {
+            const cancelled = () => run !== cameraRollRun;
             const owner = panel.dataset.syncAccountOwner || "";
             if (webAccount && !owner) return "syncCameraRollAccountUnknown";
             const endpoint = window.location.origin + "/cloud/actions.php";
             const begun = await cameraRoll.enrolBegin({endpoint, deviceLabel: tr("syncCameraRollDeviceLabel")});
             if (!begun?.userCode || !begun?.commitment) return "syncCameraRollFailed";
-            if (cameraRollCancelled) return "syncCameraRollCancelled";
+            if (cancelled()) return "syncCameraRollCancelled";
             const pending = await window.PigcloudCsrf.postJsonResult("/cloud/actions.php?action=device-pending", {code: begun.userCode});
             const ephB64 = pending.ok && pending.data?.success === true ? pending.data.pending?.ephemeralPublicKey : "";
             if (!ephB64) return "syncCameraRollFailed";
-            if (cameraRollCancelled) return "syncCameraRollCancelled";
+            if (cancelled()) return "syncCameraRollCancelled";
             const eph = window.PigcloudSharedUtil.base64ToBytes(ephB64);
             const digest = new Uint8Array(await window.crypto.subtle.digest("SHA-256", eph));
             if (eph.length !== 1216 || window.PigcloudSharedUtil.bytesToBase64Url(digest) !== begun.commitment) return "syncCameraRollMismatch";
@@ -653,7 +683,7 @@ window.PigcloudSettingsSync = (() => {
             if (!input || input.mode !== "password" || !input.password) return "syncCameraRollCancelled";
             let sealedB64;
             try {
-                if (cameraRollCancelled) return "syncCameraRollCancelled";
+                if (cancelled()) return "syncCameraRollCancelled";
                 const sudo = await window.PigcloudSudoGuard.activateWithPassword(input.password);
                 if (!sudo?.ok) return "syncCameraRollUnlockFailed";
                 if (!await window.PigcloudE2EEUnlock.unlockFull(input.password)) return "syncCameraRollUnlockFailed";
@@ -664,7 +694,7 @@ window.PigcloudSettingsSync = (() => {
             } finally {
                 input.password = "";
             }
-            if (cameraRollCancelled) return "syncCameraRollCancelled";
+            if (cancelled()) return "syncCameraRollCancelled";
 
             const approved = await window.PigcloudCsrf.postJsonResult("/cloud/actions.php?action=device-approve", {code: begun.userCode, sealed_key: sealedB64});
             if (!approved.ok || approved.data?.success !== true) return "syncCameraRollFailed";
@@ -687,7 +717,7 @@ window.PigcloudSettingsSync = (() => {
         }
         async function cameraRollAction(name) {
             if (name === "cancel-camera-roll") {
-                cameraRollCancelled = true;
+                cameraRollRun++;
                 try { await cameraRoll.enrolCancel(); } catch {  }
                 cameraRollBusy = false;
                 cameraRollStepKey = "";
@@ -695,7 +725,7 @@ window.PigcloudSettingsSync = (() => {
                 renderCameraRoll();
                 return;
             }
-            if (cameraRollBusy) return;
+            if (cameraRollBusy || cameraRollForeign()) return;
             if (name === "back-up-camera-roll" || name === "camera-roll-access") {
                 cameraRollBusy = true;
                 cameraRollIssueKey = "";
@@ -724,7 +754,7 @@ window.PigcloudSettingsSync = (() => {
             await refreshCameraRoll();
         }
         async function toggleCameraRoll() {
-            if (cameraRollBusy) { renderCameraRoll(); return; }
+            if (cameraRollBusy || cameraRollForeign()) { renderCameraRoll(); return; }
             const wanted = cameraRollToggle.input.checked;
             cameraRollIssueKey = "";
             if (!wanted) {
@@ -741,18 +771,17 @@ window.PigcloudSettingsSync = (() => {
                 await refreshCameraRoll();
                 return;
             }
+            const run = ++cameraRollRun;
             cameraRollBusy = true;
-            cameraRollCancelled = false;
             cameraRollStepKey = "syncCameraRollEnrolling";
             renderCameraRoll();
-            let failure = "syncCameraRollFailed";
-            try { failure = await enrolCameraRoll(); }
-            catch { failure = cameraRollCancelled ? "syncCameraRollCancelled" : "syncCameraRollFailed"; }
-            finally {
-                cameraRollBusy = false;
-                cameraRollStepKey = "";
-                cameraRollIssueKey = failure;
-            }
+            let failure;
+            try { failure = await enrolCameraRoll(run); }
+            catch { failure = run !== cameraRollRun ? "syncCameraRollCancelled" : "syncCameraRollFailed"; }
+            if (run !== cameraRollRun) return;
+            cameraRollBusy = false;
+            cameraRollStepKey = "";
+            cameraRollIssueKey = failure;
             await refreshCameraRoll();
         }
         function render() {
@@ -760,6 +789,7 @@ window.PigcloudSettingsSync = (() => {
             if (!hasPairs) return;
             checkAccount();
             status.textContent = ownerRefreshing ? tr("syncLoading") : ownerRefreshFailed ? tr("syncUnavailable") : accountMismatch ? tr("syncAccountMismatch") : settings?.cliAvailable === false ? tr("syncMissingCli") : stateLabel(snapshot?.state);
+            status.className = ownerRefreshing ? "field-status status-idle" : ownerRefreshFailed ? "field-status status-error" : accountMismatch ? "field-status status-warning" : stateTone(settings?.cliAvailable === false ? "noCli" : snapshot?.state);
             notice.textContent = identityBlocked ? "" : detailText(snapshot?.notice);
             notice.hidden = !notice.textContent;
             cli.textContent = identityBlocked ? "" : settings?.cliAvailable ? tr("syncCliDetected", {path: settings.cliPath || "pc"}) : tr("syncMissingCli");
@@ -791,13 +821,31 @@ window.PigcloudSettingsSync = (() => {
             renderPairs();
             renderFeeds();
         }
+        function feedChoices() {
+            const conflicts = Array.isArray(feeds.conflicts) ? feeds.conflicts.filter(item => !resolvedPaths.has(pathKey(selection, item.path))).length : 0;
+            return [
+                conflicts ? {value: "conflicts", label: tr("syncConflictsCount", {count: conflicts})} : {value: "conflicts", label: tr("syncConflictsTitle"), translateKey: "syncConflictsTitle"},
+                {value: "activity", label: tr("syncActivityTitle"), translateKey: "syncActivityTitle"},
+                {value: "files", label: tr("syncFilesTitle"), translateKey: "syncFilesTitle"},
+            ];
+        }
+        function renderFeedChoices() {
+            const choices = feedChoices();
+            const key = JSON.stringify(choices);
+            if (key === feedChoicesKey) return;
+            feedChoicesKey = key;
+            const value = feedSelect.value;
+            feedSelect.setOptions(choices);
+            feedSelect.value = value;
+        }
         async function readFeeds(captured, ticket) {
             if (identityBlocked) return;
             const pairId = selection;
             const resolvedBeforeQuery = new Set(resolvedPaths);
-            const results = await Promise.allSettled(["activity", "conflicts", "files"].map(kind => engine[kind]({pairId})));
+            const kinds = [...new Set(["conflicts", feedSelect.value])];
+            const results = await Promise.allSettled(kinds.map(kind => engine[kind]({pairId})));
             if (!current(captured) || ticket !== request || pairId !== selection) return;
-            ["activity", "conflicts", "files"].forEach((kind, index) => {
+            kinds.forEach((kind, index) => {
                 const result = results[index];
                 const value = result.status === "fulfilled" ? result.value : null;
                 const matches = value?.pairId === pairId && value?.revision === captured.revision;
@@ -824,7 +872,7 @@ window.PigcloudSettingsSync = (() => {
             if (!Array.isArray(next?.pairs)) { refreshIssue.textContent = tr("syncRefreshFailed"); return; }
             if (settings && next.revision !== settings.revision) {
                 epoch++;
-                if (editor) message("syncNativeStaleSettings", true);
+                if (editor) message("syncNativeStaleSettings", "error");
                 editor = null;
                 editorSection.hidden = true;
                 editing = false;
@@ -856,18 +904,18 @@ window.PigcloudSettingsSync = (() => {
             if (editor) {
                 editor = null;
                 editorSection.hidden = true;
-                message("syncDraftChanged", true);
+                message("syncDraftChanged", "error");
             }
             for (const kind of Object.keys(feeds)) feeds[kind] = null;
             pairSelect.value = selection;
             renderFeeds();
-            refresh().catch(() => message("syncRefreshFailed", true));
+            refresh().catch(() => message("syncRefreshFailed", "error"));
         }
         function schedule() {
             if (!active || disposed) return;
             timer = setTimeout(() => {
                 timer = null;
-                refresh().catch(() => message("syncRefreshFailed", true)).finally(schedule);
+                refresh().catch(() => { refreshIssue.textContent = tr("syncRefreshFailed"); }).finally(schedule);
             }, 3000);
         }
         function onSnapshot(update) {
@@ -903,7 +951,7 @@ window.PigcloudSettingsSync = (() => {
             if (active) {
                 if (editor) editor.epoch = epoch;
                 if (typeof engine.subscribe === "function") unsubscribe = engine.subscribe(onSnapshot);
-                refresh().catch(() => message("syncRefreshFailed", true)).finally(schedule);
+                refresh().catch(() => { refreshIssue.textContent = tr("syncRefreshFailed"); }).finally(schedule);
             }
         }
         function edit(pair) {
@@ -996,6 +1044,11 @@ window.PigcloudSettingsSync = (() => {
                     const confirmed = await window.PigcloudDialogManager.confirm(tr(name === "remove" ? "syncRemove" : "syncResolveTitle"), tr(name === "remove" ? "syncRemoveConfirm" : "syncResolveConfirm", {path: displayPath(name === "remove" ? pair.mountPoint : path)}), {danger: name === "remove" || control.dataset.choice !== "both"});
                     if (!confirmed || !current(captured)) return;
                 }
+                if (name === "release") {
+                    const deleting = control.dataset.choice === "delete";
+                    const confirmed = await window.PigcloudDialogManager.confirm(tr(deleting ? "syncDeletesConfirm" : "syncDeletesRestore"), tr(deleting ? "syncDeletesConfirmText" : "syncDeletesRestoreText", {path: displayPath(pair.mountPoint)}), {danger: deleting});
+                    if (!confirmed || !current(captured)) return;
+                }
                 if (name === "browse") {
                     const target = editor;
                     const picked = await engine.pickFolder();
@@ -1023,17 +1076,26 @@ window.PigcloudSettingsSync = (() => {
                     const method = methods[name] || name;
                     const args = pairId ? {pairId} : {};
                     if (path) args.path = path;
-                    if (name === "resolve") args.choice = control.dataset.choice;
+                    if (name === "resolve" || name === "release") args.choice = control.dataset.choice;
+                    if (name === "connect") {
+                        if (accountMismatch) {
+                            const confirmed = await window.PigcloudDialogManager.confirm(tr("syncConnect"), tr("syncConnectReplaceConfirm"), {danger: true});
+                            if (!confirmed || !current(captured)) return;
+                        }
+                        args.replace = accountMismatch || snapshot?.state === "notConfigured";
+                    }
                     const result = await engine[method](args);
                     if (result?.success === false || result?.ok === false) throw new Error("Action failed");
                     if (current(captured)) {
                         if (name === "resolve") resolvedPaths.add(key);
-                        if (!SILENT_ACTIONS.has(name)) message(name === "resolve" ? "syncResolved" : "syncActionDone");
+                        if (name === "pick-cli" || name === "reset-cli") {
+                            if (result) message(result.cliAvailable === false ? "syncMissingCli" : name === "pick-cli" ? "syncChosenCli" : "syncDetectedCli", result.cliAvailable === false ? "error" : "success");
+                        } else if (!SILENT_ACTIONS.has(name)) message(name === "resolve" ? "syncResolved" : "syncActionDone");
                     }
                 }
             } catch (error) {
                 if (current(captured)) {
-                    if (name === "connect" && cancelRequested) message("syncConnectCancelled");
+                    if (name === "connect" && cancelRequested) message("syncConnectCancelled", "info");
                     else actionFailure(error);
                 }
                 return;
@@ -1050,7 +1112,7 @@ window.PigcloudSettingsSync = (() => {
         }
         const onClick = event => {
             const control = event.target.closest("button[data-sync-action]");
-            if (control && panel.contains(control) && !control.disabled) action(control).catch(() => message("syncRefreshFailed", true));
+            if (control && panel.contains(control) && !control.disabled) action(control).catch(() => message("syncRefreshFailed", "error"));
         };
         const onInput = () => { editing = true; };
         const onCameraRollToggle = () => toggleCameraRoll().catch(() => {

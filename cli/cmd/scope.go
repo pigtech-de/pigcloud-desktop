@@ -77,6 +77,25 @@ func addRecursiveListingScope(ctx context.Context, options map[string]string, re
 	setScope(options, built.Subtree(folderID, includeHidden))
 }
 
+func addMatchingSubtreeScope(ctx context.Context, options map[string]string, resolvedPath string, includeHidden bool, keep func(*tree.Node) bool) *tree.Tree {
+	built := loadClientTree(ctx)
+	if built == nil {
+		return nil
+	}
+	folderID, ok := folderIDFor(built, resolvedPath)
+	if !ok {
+		return nil
+	}
+	ids := []string{}
+	for _, id := range built.Subtree(folderID, includeHidden) {
+		if node, found := built.Get(id); found && keep(node) {
+			ids = append(ids, id)
+		}
+	}
+	setScope(options, ids)
+	return built
+}
+
 func addSubtreeScope(ctx context.Context, options map[string]string, resolvedPath string) {
 	built := loadClientTree(ctx)
 	if built == nil {

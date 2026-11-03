@@ -9,6 +9,7 @@ import (
 	"pigcloud/internal/completion"
 	"pigcloud/internal/e2ee"
 	"pigcloud/internal/output"
+	"pigcloud/internal/tree"
 
 	"github.com/spf13/cobra"
 )
@@ -87,9 +88,24 @@ func runFind(pattern, searchPath string) {
 	}
 	findFilters.apply(options)
 
+	mode := cmdutil.MatchGlob
+	if findRegex {
+		mode = cmdutil.MatchRegex
+	} else if findFixed {
+		mode = cmdutil.MatchFixed
+	}
+	matcher, err := cmdutil.CompileMatcher(pattern, mode, findIgnoreCase)
+	if err != nil {
+		output.PrintError("Invalid pattern: " + err.Error())
+		ExitWithError()
+	}
+
+	var built *tree.Tree
 	if e2ee.HasE2EEKeys() {
 		cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
-		addRecursiveListingScope(ctx, options, resolvedPath, findAll)
+		built = addMatchingSubtreeScope(ctx, options, resolvedPath, findAll, func(node *tree.Node) bool {
+			return node.Name != e2ee.NameUnavailable && matcher.MatchString(node.Name)
+		})
 	}
 
 	_, payload := cmdutil.ExecuteCommand[api.FindPayload](ctx, "fd", options, ExitWithError)
@@ -136,19 +152,15 @@ func runFind(pattern, searchPath string) {
 		return prefix + strings.Join(segments, "/")
 	}
 	for i := range payload.Results {
-		payload.Results[i].Path = buildPath(payload.Results[i].ID)
-	}
-
-	mode := cmdutil.MatchGlob
-	if findRegex {
-		mode = cmdutil.MatchRegex
-	} else if findFixed {
-		mode = cmdutil.MatchFixed
-	}
-	matcher, err := cmdutil.CompileMatcher(pattern, mode, findIgnoreCase)
-	if err != nil {
-		output.PrintError("Invalid pattern: " + err.Error())
-		ExitWithError()
+		path := ""
+		if built != nil {
+			path = built.PathOf(payload.Results[i].ID)
+		}
+		if path != "" {
+			payload.Results[i].Path = "/" + path
+		} else {
+			payload.Results[i].Path = buildPath(payload.Results[i].ID)
+		}
 	}
 
 	filtered := payload.Results[:0]
@@ -175,6 +187,7 @@ func runFind(pattern, searchPath string) {
 
 	if len(payload.Results) == 0 {
 		output.PrintInfo("No matches found for pattern: " + pattern)
+		printFindLimited(payload.Limited)
 		return
 	}
 
@@ -191,4 +204,11 @@ func runFind(pattern, searchPath string) {
 	table.Render()
 
 	fmt.Printf("\n%d results\n", len(payload.Results))
+	printFindLimited(payload.Limited)
+}
+
+func printFindLimited(limited bool) {
+	if limited {
+		output.PrintWarning(fmt.Sprintf("Results may be incomplete: the search stopped at %d items. Narrow the pattern or path, or raise --limit.", findLimit))
+	}
 }

@@ -828,7 +828,7 @@ func TestFetchTeeAttestationNeverReturnsAFailureBodyAsAnAnswer(t *testing.T) {
 		body   string
 	}{
 		{"verify busy 503", 503, `{"success":false,"error":"api_key_verify_busy"}`},
-		{"scanner unavailable 502", 502, `{"success":false,"message":"TEE scanner unavailable"}`},
+		{"scanner unavailable 502", 502, `{"success":false,"message":"Upload scanner unavailable"}`},
 		{"cloudflare html 520", 520, `<html>origin error</html>`},
 		{"success false at 200", 200, `{"success":false}`},
 		{"unreadable 200", 200, `not json`},
@@ -874,13 +874,13 @@ func TestFetchTeeAttestationDoesNotRetryAnAuthRefusal(t *testing.T) {
 func TestFetchTeeAttestation(t *testing.T) {
 	fastAttestationRetries(t)
 	client, mu, reqs, set := captureServer(t)
-	set(jsonResponder(200, `{"success":true,"enabled":true,"available":true,"attestation":{"enclave_public_key":"epk","attestation_mode":"epid","verification_status":"trusted"}}`))
+	set(jsonResponder(200, `{"success":true,"enabled":true,"available":true,"attestation":{"enclave_public_key":"epk","enclave_public_key_kyber":"kpk","attestation_mode":"none"}}`))
 
 	res, err := client.FetchTeeAttestation(context.Background())
 	if err != nil {
 		t.Fatalf("attestation: %v", err)
 	}
-	if !res.Success || !res.Available || res.Attestation.EnclavePublicKey != "epk" || res.Attestation.VerificationStatus != "trusted" {
+	if !res.Success || !res.Available || res.Attestation.EnclavePublicKey != "epk" || res.Attestation.EnclavePublicKeyKyber != "kpk" {
 		t.Errorf("decoded: %+v", res)
 	}
 	mu.Lock()

@@ -2,7 +2,7 @@ import net from 'node:net';
 import { decodeWire, encodeWire, MOUNT_PROTOCOL } from './wire.mjs';
 import { SyncError } from './errors.mjs';
 
-const ACTIONS = new Set(['ping', 'status', 'shutdown', 'flush', 'files', 'conflicts', 'activity', 'resolve', 'retry']);
+const ACTIONS = new Set(['ping', 'status', 'shutdown', 'flush', 'files', 'conflicts', 'activity', 'resolve', 'retry', 'release']);
 
 export function requestDaemon(entry, action, fields = {}, { connect = net.createConnection, maxBytes = 4 * 1024 * 1024 } = {}) {
     if (!ACTIONS.has(action) || !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535) {

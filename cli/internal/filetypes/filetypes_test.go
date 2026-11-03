@@ -56,22 +56,31 @@ func TestTypeOfMatchesTheRegistryForEveryExtension(t *testing.T) {
 	}
 }
 
-func TestIsTextTracksTheRegistry(t *testing.T) {
-	reg := registryFromEmbedded(t)
+func TestIsPlainTextTracksTheEditCapability(t *testing.T) {
+	var reg struct {
+		Extensions map[string]struct {
+			Cap struct {
+				Edit string `json:"edit"`
+			} `json:"cap"`
+		} `json:"extensions"`
+	}
+	if err := json.Unmarshal(rawJSON, &reg); err != nil {
+		t.Fatalf("parse embedded file-types.json: %v", err)
+	}
 	text, nonText := 0, 0
-	for _, ext := range sortedKeys(reg) {
-		want := reg[ext] == "text"
+	for ext, entry := range reg.Extensions {
+		want := entry.Cap.Edit == "native"
 		if want {
 			text++
 		} else {
 			nonText++
 		}
-		if got := IsText(ext); got != want {
-			t.Errorf("IsText(%q) = %v, registry type is %q", ext, got, reg[ext])
+		if got := IsPlainText(ext); got != want {
+			t.Errorf("IsPlainText(%q) = %v, registry cap.edit is %q", ext, got, entry.Cap.Edit)
 		}
 	}
 	if text == 0 || nonText == 0 {
-		t.Fatalf("registry covered only one side (text=%d, non-text=%d)", text, nonText)
+		t.Fatalf("registry covered only one side (plain=%d, other=%d)", text, nonText)
 	}
 }
 
@@ -120,8 +129,8 @@ func TestTypeOfOnlyAnswersForExactRegistryKeys(t *testing.T) {
 			if got := TypeOf(tc.in); got != "other" {
 				t.Errorf("TypeOf(%q) = %q, want \"other\"", tc.in, got)
 			}
-			if IsText(tc.in) {
-				t.Errorf("IsText(%q) = true for a non-registry key", tc.in)
+			if IsPlainText(tc.in) {
+				t.Errorf("IsPlainText(%q) = true for a non-registry key", tc.in)
 			}
 		})
 	}

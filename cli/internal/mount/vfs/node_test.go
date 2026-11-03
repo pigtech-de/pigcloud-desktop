@@ -83,13 +83,32 @@ func TestNodeFullPath(t *testing.T) {
 }
 
 func TestJoinPath(t *testing.T) {
-	if got := joinPath("", "a.txt"); got != "a.txt" {
+	if got := JoinPath("", "a.txt"); got != "a.txt" {
 		t.Errorf("root join: %q", got)
 	}
-	if got := joinPath("Docs", "a.txt"); got != "Docs/a.txt" {
+	if got := JoinPath("Docs", "a.txt"); got != "Docs/a.txt" {
 		t.Errorf("nested join: %q", got)
 	}
-	if got := joinPath("Docs/Sub", "x"); got != "Docs/Sub/x" {
+	if got := JoinPath("Docs/Sub", "x"); got != "Docs/Sub/x" {
 		t.Errorf("deep join: %q", got)
+	}
+}
+
+func TestDetachChildUntracksDescendants(t *testing.T) {
+	db, err := cache.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	v := New("", db, nil, nil, nil, nil, nil, nil, nil, nil)
+	dir := NewDirNode("d", "d", v.Root)
+	dir.ID = 10
+	v.AttachChild(v.Root, dir)
+	file := NewFileNode("f", "d/f", 1, time.Now(), dir)
+	file.ID = 11
+	v.AttachChild(dir, file)
+	v.DetachChild(v.Root, "d")
+	if v.NodeByID(11) != nil {
+		t.Fatal("a detached folder's child stays reachable by id")
 	}
 }

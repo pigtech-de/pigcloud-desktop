@@ -22,6 +22,7 @@ import (
 var (
 	ctHead int
 	ctTail int
+	ctFrom int
 )
 
 var ctCmd = &cobra.Command{
@@ -47,6 +48,7 @@ func init() {
 	rootCmd.AddCommand(ctCmd)
 	ctCmd.Flags().IntVarP(&ctHead, "head", "n", 0, "show only the first N lines")
 	ctCmd.Flags().IntVarP(&ctTail, "tail", "t", 0, "show only the last N lines")
+	ctCmd.Flags().IntVar(&ctFrom, "from", 0, "start at line N")
 }
 
 func runCt(targetPath string) {
@@ -61,6 +63,9 @@ func runCt(targetPath string) {
 	}
 	if ctTail > 0 {
 		options["tail"] = strconv.Itoa(ctTail)
+	}
+	if ctFrom > 0 {
+		options["from"] = strconv.Itoa(ctFrom)
 	}
 
 	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
@@ -149,12 +154,17 @@ func decryptCatContent(payload api.CatPayload) string {
 
 	content := string(plaintext)
 
-	if ctHead > 0 || ctTail > 0 {
+	if ctHead > 0 || ctTail > 0 || ctFrom > 1 {
 		lines := strings.Split(content, "\n")
 		if ctTail > 0 && ctTail < len(lines) {
 			lines = lines[len(lines)-ctTail:]
-		} else if ctHead > 0 && ctHead < len(lines) {
-			lines = lines[:ctHead]
+		} else {
+			if ctFrom > 1 {
+				lines = lines[min(ctFrom-1, len(lines)):]
+			}
+			if ctHead > 0 && ctHead < len(lines) {
+				lines = lines[:ctHead]
+			}
 		}
 		content = strings.Join(lines, "\n")
 	}

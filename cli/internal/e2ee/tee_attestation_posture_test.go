@@ -18,36 +18,28 @@ import (
 )
 
 type attestationAnswer struct {
-	mode      string
-	mrenclave string
-	quote     string
-	status    string
-	x25519    []byte
-	kyber     []byte
+	x25519 []byte
+	kyber  []byte
 }
 
-func sgxTrusted(x []byte, mr string) attestationAnswer {
-	return attestationAnswer{mode: "epid", mrenclave: mr, quote: b64([]byte("quote")), status: "trusted", x25519: x, kyber: make([]byte, crypto.KyberPublicKeySize)}
+func scannerKeys(x []byte) attestationAnswer {
+	return attestationAnswer{x25519: x, kyber: make([]byte, crypto.KyberPublicKeySize)}
 }
 
-func nonSgx(x []byte) attestationAnswer {
-	return attestationAnswer{mode: "none", status: "unverified", x25519: x, kyber: make([]byte, crypto.KyberPublicKeySize)}
+func attestationBody(a *attestationAnswer) map[string]any {
+	return map[string]any{
+		"enclave_public_key":       b64(a.x25519),
+		"enclave_public_key_kyber": b64(a.kyber),
+		"attestation_mode":         "none",
+	}
 }
 
 func serveEnclaveKeys(t *testing.T, answer *atomic.Pointer[attestationAnswer]) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		a := answer.Load()
 		body := map[string]any{
 			"success": true, "enabled": true, "available": true,
-			"attestation": map[string]any{
-				"enclave_public_key":       b64(a.x25519),
-				"enclave_public_key_kyber": b64(a.kyber),
-				"attestation_mode":         a.mode,
-				"mrenclave":                a.mrenclave,
-				"sgx_quote":                a.quote,
-				"verification_status":      a.status,
-			},
+			"attestation": attestationBody(answer.Load()),
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(body)
@@ -62,101 +54,54 @@ func fetchFresh() *crypto.PublicKeySet {
 	return FetchTeeEnclaveKeySet(context.Background())
 }
 
-func TestEnclaveKeyFetchRefusesSgxToNoneDowngrade(t *testing.T) {
+func TestEnclaveKeyFetchRefusesARetiredModePinAsADowngrade(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	x := randKey(t, 32)
+	served := scannerKeys(x)
+	path := teeSigningPins.path()
+	stored := fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"mode":"epid","mrenclave":"aa11","sealing_pk":%q,"sealing_pk_kyber":%q}}}}`,
+		teeSigningPinVersion, signingPinOwner(), b64(x), b64(served.kyber))
+	if err := os.WriteFile(path, []byte(stored), 0600); err != nil {
+		t.Fatal(err)
+	}
 	var answer atomic.Pointer[attestationAnswer]
-	first := sgxTrusted(x, "aa11")
-	answer.Store(&first)
+	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
 
-	if fetchFresh() == nil {
-		t.Fatalf("a trusted SGX attestation was refused on first contact: %v", TeeEnclaveKeyRefusal())
-	}
-
-	swapped := nonSgx(randKey(t, 32))
-	answer.Store(&swapped)
 	if fetchFresh() != nil {
-		t.Fatal("after a trusted SGX contact the server claimed non-SGX and its fresh key was accepted")
+		t.Fatal("a pin an older build wrote under the retired mode accepted the same key without a repin")
 	}
 	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_attestation_downgraded") {
 		t.Fatalf("refusal reason = %v, want tee_attestation_downgraded", err)
 	}
-}
-
-func TestEnclaveKeyFetchRefusesAnSgxKeySwapUnderThePinnedMrenclave(t *testing.T) {
-	withIsolatedPinStore(t)
-	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
-	var answer atomic.Pointer[attestationAnswer]
-	first := sgxTrusted(randKey(t, 32), "aa11")
-	answer.Store(&first)
-	serveEnclaveKeys(t, &answer)
-	if fetchFresh() == nil {
-		t.Fatalf("first contact refused: %v", TeeEnclaveKeyRefusal())
+	if p := mustPinnedPosture(t); p == nil || p.Mode != "epid" {
+		t.Fatalf("a refused downgrade rewrote the pin: %+v", p)
 	}
-	if fetchFresh() == nil {
-		t.Fatalf("the pinned SGX key was refused on the second fetch: %v", TeeEnclaveKeyRefusal())
-	}
-
-	swapped := sgxTrusted(randKey(t, 32), "aa11")
-	answer.Store(&swapped)
-	if fetchFresh() != nil {
-		t.Fatal("a new sealing key under the pinned MRENCLAVE was accepted on the server's unverified word")
-	}
-	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
-		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
-	}
-
-	kyberSwapped := first
-	kyberSwapped.kyber = randKey(t, crypto.KyberPublicKeySize)
-	answer.Store(&kyberSwapped)
-	if fetchFresh() != nil {
-		t.Fatal("a swapped ML-KEM half under the pinned X25519 key was accepted")
+	if got := PinnedTeeAttestationLabel(); !strings.HasPrefix(got, "retired attestation mode epid, sealing key ") {
+		t.Fatalf("pinned label = %q, want the retired mode named for the repin", got)
 	}
 }
 
-func TestEnclaveKeyFetchRefusesMrenclaveChange(t *testing.T) {
-	withIsolatedPinStore(t)
-	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
-	var answer atomic.Pointer[attestationAnswer]
-	first := sgxTrusted(randKey(t, 32), "aa11")
-	answer.Store(&first)
-	serveEnclaveKeys(t, &answer)
-	if fetchFresh() == nil {
-		t.Fatalf("first contact refused: %v", TeeEnclaveKeyRefusal())
-	}
-
-	rebuilt := first
-	rebuilt.mrenclave = "bb22"
-	answer.Store(&rebuilt)
-	if fetchFresh() != nil {
-		t.Fatal("a different MRENCLAVE was accepted without operator action")
-	}
-	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_mrenclave_changed") {
-		t.Fatalf("refusal reason = %v, want tee_mrenclave_changed", err)
-	}
-}
-
-func TestEnclaveKeyFetchPinsNonSgxSealingKey(t *testing.T) {
+func TestEnclaveKeyFetchPinsTheSealingKey(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	x := randKey(t, 32)
 	var answer atomic.Pointer[attestationAnswer]
-	first := nonSgx(x)
+	first := scannerKeys(x)
 	answer.Store(&first)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
-		t.Fatalf("non-SGX first contact refused: %v", TeeEnclaveKeyRefusal())
+		t.Fatalf("first contact refused: %v", TeeEnclaveKeyRefusal())
 	}
 	if fetchFresh() == nil {
-		t.Fatalf("the same non-SGX key was refused on the second fetch: %v", TeeEnclaveKeyRefusal())
+		t.Fatalf("the same key was refused on the second fetch: %v", TeeEnclaveKeyRefusal())
 	}
 
-	swapped := nonSgx(randKey(t, 32))
+	swapped := scannerKeys(randKey(t, 32))
 	answer.Store(&swapped)
 	if fetchFresh() != nil {
-		t.Fatal("a swapped non-SGX sealing key was accepted")
+		t.Fatal("a swapped sealing key was accepted")
 	}
 	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
 		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
@@ -166,55 +111,29 @@ func TestEnclaveKeyFetchPinsNonSgxSealingKey(t *testing.T) {
 	}
 }
 
-func TestEnclaveKeyFetchRefusesANoneToSgxFlip(t *testing.T) {
+func TestEnclaveKeyFetchRefusesARetiredModePinThatHoldsNoKeys(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
+	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid"})
 	var answer atomic.Pointer[attestationAnswer]
-	x := randKey(t, 32)
-	first := nonSgx(x)
-	answer.Store(&first)
-	serveEnclaveKeys(t, &answer)
-	if fetchFresh() == nil {
-		t.Fatalf("non-SGX first contact refused: %v", TeeEnclaveKeyRefusal())
-	}
-
-	for _, claim := range []attestationAnswer{sgxTrusted(randKey(t, 32), "aa11"), sgxTrusted(x, "aa11")} {
-		answer.Store(&claim)
-		if fetchFresh() != nil {
-			t.Fatal("a reply claiming a trusted SGX quote moved a non-SGX pin; this client never verifies quotes")
-		}
-		if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_attestation_mode_changed") {
-			t.Fatalf("refusal reason = %v, want tee_attestation_mode_changed", err)
-		}
-	}
-	if p := mustPinnedPosture(t); p == nil || p.Mode != "none" || p.SealingPk != b64(x) {
-		t.Fatalf("a refused flip rewrote the pin: %+v", p)
-	}
-}
-
-func TestEnclaveKeyFetchRefusesALegacySgxPinThatHoldsNoKeys(t *testing.T) {
-	withIsolatedPinStore(t)
-	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
-	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid", Mrenclave: "aa11"})
-	var answer atomic.Pointer[attestationAnswer]
-	served := sgxTrusted(randKey(t, 32), "aa11")
+	served := scannerKeys(randKey(t, 32))
 	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() != nil {
-		t.Fatal("an SGX pin with no sealing key accepted whatever key the server named")
+		t.Fatal("a retired-mode pin with no sealing key accepted whatever key the server named")
 	}
-	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_enclave_pk_changed") {
-		t.Fatalf("refusal reason = %v, want tee_enclave_pk_changed", err)
+	if err := TeeEnclaveKeyRefusal(); err == nil || !strings.Contains(err.Error(), "tee_attestation_downgraded") {
+		t.Fatalf("refusal reason = %v, want tee_attestation_downgraded", err)
 	}
 }
 
-func TestEnclaveKeyFetchCompletesALegacyNonSgxPinWithItsMlKemHalf(t *testing.T) {
+func TestEnclaveKeyFetchCompletesALegacyPinWithItsMlKemHalf(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	x := randKey(t, 32)
 	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: b64(x)})
 	var answer atomic.Pointer[attestationAnswer]
-	served := nonSgx(x)
+	served := scannerKeys(x)
 	served.kyber = randKey(t, crypto.KyberPublicKeySize)
 	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
@@ -237,7 +156,7 @@ func TestEnclaveKeyFetchPostureIsPerAccount(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
-	first := nonSgx(randKey(t, 32))
+	first := scannerKeys(randKey(t, 32))
 	answer.Store(&first)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
@@ -245,7 +164,7 @@ func TestEnclaveKeyFetchPostureIsPerAccount(t *testing.T) {
 	}
 
 	setOwner(t, randKey(t, 32))
-	other := nonSgx(randKey(t, 32))
+	other := scannerKeys(randKey(t, 32))
 	answer.Store(&other)
 	if fetchFresh() == nil {
 		t.Fatalf("a second account inherited the first account's sealing-key pin: %v", TeeEnclaveKeyRefusal())
@@ -256,7 +175,7 @@ func TestEnclaveKeyFetchDoesNotPinOnMalformedKeys(t *testing.T) {
 	withIsolatedPinStore(t)
 	t.Cleanup(func() { defaultSession.teeEnclaveKeySet = nil })
 	var answer atomic.Pointer[attestationAnswer]
-	bad := nonSgx(randKey(t, 32))
+	bad := scannerKeys(randKey(t, 32))
 	bad.kyber = []byte("short")
 	answer.Store(&bad)
 	serveEnclaveKeys(t, &answer)
@@ -264,7 +183,7 @@ func TestEnclaveKeyFetchDoesNotPinOnMalformedKeys(t *testing.T) {
 		t.Fatal("a malformed kyber key was accepted")
 	}
 
-	good := nonSgx(randKey(t, 32))
+	good := scannerKeys(randKey(t, 32))
 	answer.Store(&good)
 	if fetchFresh() == nil {
 		t.Fatalf("a malformed first answer pinned its sealing key and refused the next: %v", TeeEnclaveKeyRefusal())
@@ -273,9 +192,9 @@ func TestEnclaveKeyFetchDoesNotPinOnMalformedKeys(t *testing.T) {
 
 func TestSigningPinAndPostureSurviveEachOthersWriter(t *testing.T) {
 	withIsolatedPinStore(t)
-	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid", Mrenclave: "aa11"})
+	recordTeeAttestationPosture(teeAttestationPosture{Mode: "epid", SealingPk: "y"})
 	recordTeeSigningPk(b64([]byte("ed")), b64([]byte("ml")))
-	if p := mustPinnedPosture(t); p == nil || p.Mrenclave != "aa11" {
+	if p := mustPinnedPosture(t); p == nil || p.Mode != "epid" || p.SealingPk != "y" {
 		t.Fatalf("recording the signing pin dropped the posture: %+v", p)
 	}
 	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: "x"})
@@ -306,8 +225,8 @@ func TestEnclaveKeyFetchNamesAMalformedKeyRatherThanReportingUnreachable(t *test
 		name   string
 		answer attestationAnswer
 	}{
-		{"short x25519", attestationAnswer{mode: "none", status: "unverified", x25519: randKey(t, 16), kyber: make([]byte, crypto.KyberPublicKeySize)}},
-		{"short kyber", attestationAnswer{mode: "none", status: "unverified", x25519: randKey(t, 32), kyber: randKey(t, 8)}},
+		{"short x25519", attestationAnswer{x25519: randKey(t, 16), kyber: make([]byte, crypto.KyberPublicKeySize)}},
+		{"short kyber", attestationAnswer{x25519: randKey(t, 32), kyber: randKey(t, 8)}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,7 +288,7 @@ func TestAnUnusablePinStoreFailsClosedAndIsNeverRewritten(t *testing.T) {
 			return fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"sealing_pk":%q}}}}`, teeSigningPinVersion, owner, b64(x))
 		}},
 		{"posture with an unknown mode", false, func(owner string) string {
-			return fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"mode":"dcap","mrenclave":"zz"}}}}`, teeSigningPinVersion, owner)
+			return fmt.Sprintf(`{"v":%d,"owners":{%q:{"posture":{"mode":"dcap"}}}}`, teeSigningPinVersion, owner)
 		}},
 	}
 	for _, tc := range cases {
@@ -382,7 +301,7 @@ func TestAnUnusablePinStoreFailsClosedAndIsNeverRewritten(t *testing.T) {
 				t.Fatal(err)
 			}
 			var answer atomic.Pointer[attestationAnswer]
-			served := nonSgx(x)
+			served := scannerKeys(x)
 			answer.Store(&served)
 			serveEnclaveKeys(t, &answer)
 
@@ -413,7 +332,7 @@ func TestAMissingPinStoreStillPinsOnFirstContact(t *testing.T) {
 		t.Fatalf("fixture expected no pin store yet: %v", err)
 	}
 	var answer atomic.Pointer[attestationAnswer]
-	served := nonSgx(randKey(t, 32))
+	served := scannerKeys(randKey(t, 32))
 	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
 	if fetchFresh() == nil {
@@ -432,7 +351,7 @@ func TestRepinSetsAnUnusablePinStoreAsideInsteadOfOverwritingIt(t *testing.T) {
 		t.Fatal(err)
 	}
 	x := randKey(t, 32)
-	posture, err := postureFor(servedAttestation{Mode: "none", SealingPk: b64(x), SealingPkKyber: b64(make([]byte, crypto.KyberPublicKeySize))})
+	posture, err := postureFor(servedAttestation{SealingPk: b64(x), SealingPkKyber: b64(make([]byte, crypto.KyberPublicKeySize))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -458,7 +377,7 @@ func TestAdoptingTheMlKemHalfOfALegacyPinSaysSo(t *testing.T) {
 	x := randKey(t, 32)
 	recordTeeAttestationPosture(teeAttestationPosture{Mode: "none", SealingPk: b64(x)})
 	var answer atomic.Pointer[attestationAnswer]
-	served := nonSgx(x)
+	served := scannerKeys(x)
 	answer.Store(&served)
 	serveEnclaveKeys(t, &answer)
 

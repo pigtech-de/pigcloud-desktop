@@ -201,7 +201,7 @@ func TestIsGrepTargetTracksTheRegistry(t *testing.T) {
 	}
 	text := 0
 	for _, ext := range exts {
-		want := filetypes.IsText(ext)
+		want := filetypes.IsPlainText(ext)
 		if want {
 			text++
 		}
@@ -220,10 +220,10 @@ func TestIsGrepTargetHandlesInputsTheRegistryNeverHolds(t *testing.T) {
 		if strings.ToUpper(ext) == ext {
 			continue
 		}
-		if textExt == "" && filetypes.IsText(ext) {
+		if textExt == "" && filetypes.IsPlainText(ext) {
 			textExt = ext
 		}
-		if binExt == "" && !filetypes.IsText(ext) {
+		if binExt == "" && !filetypes.IsPlainText(ext) {
 			binExt = ext
 		}
 	}

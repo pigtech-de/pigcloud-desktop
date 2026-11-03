@@ -1047,3 +1047,55 @@ func TestBytesResyncsRatherThanClampingCorruption(t *testing.T) {
 		t.Errorf("the corrupt counter was not repaired: %d", got)
 	}
 }
+
+func TestUploadEnqueueKeepsFolderDelete(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.UpsertInode(&Inode{RemotePath: "X", DisplayName: "X", IsDir: true, SyncStatus: StatusSynced})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnqueueWriteback(id, "delete", "X", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.UpsertInode(&Inode{RemotePath: "X", DisplayName: "X", Size: 3, Dirty: true, SyncStatus: StatusPending}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnqueueWriteback(id, "upload", "X", ""); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := db.DequeueWriteback(10, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range rows {
+		if e.Action == "delete" {
+			return
+		}
+	}
+	t.Fatal("a file upload cancelled the delete of the folder it replaces")
+}
+
+func TestDeleteEnqueueCancelsParkedUpload(t *testing.T) {
+	db, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	id, err := db.UpsertInode(&Inode{RemotePath: "a.txt", DisplayName: "a.txt", Size: 3, Dirty: true, SyncStatus: StatusPending})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnqueueWriteback(id, "upload", "a.txt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.EnqueueWriteback(id, "delete", "a.txt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if active, _ := db.HasActiveWriteback(id, "upload"); active {
+		t.Fatal("a parked upload outlived the delete and would re-create the deleted file")
+	}
+}

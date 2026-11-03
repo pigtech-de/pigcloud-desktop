@@ -69,6 +69,9 @@ func EncryptWithKey(plaintext []byte, key []byte) ([]byte, []byte, error) {
 }
 
 func DecryptWithKey(ciphertext []byte, nonce []byte, key []byte) ([]byte, error) {
+	if len(nonce) != NonceSize {
+		return nil, fmt.Errorf("nonce must be %d bytes, got %d", NonceSize, len(nonce))
+	}
 	aead, err := chacha20poly1305.NewX(key)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create AEAD: %w", err)

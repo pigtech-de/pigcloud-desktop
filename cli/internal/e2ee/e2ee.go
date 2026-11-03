@@ -414,14 +414,24 @@ func (s *Session) FetchTeeEnclaveKeySet(ctx context.Context) *crypto.PublicKeySe
 		s.mu.Unlock()
 		return cached
 	}
-	if call := s.teeKeysFetch; call != nil {
-		s.mu.Unlock()
+	call, started := s.joinTeeKeysFetchLocked()
+	s.mu.Unlock()
+	if !started {
 		return call.wait(ctx)
 	}
-	call := &teeKeysCall{done: make(chan struct{}), epoch: s.teeKeysEpoch}
-	s.teeKeysFetch = call
-	s.mu.Unlock()
+	return s.runTeeKeysFetch(ctx, call)
+}
 
+func (s *Session) joinTeeKeysFetchLocked() (call *teeKeysCall, started bool) {
+	if call := s.teeKeysFetch; call != nil {
+		return call, false
+	}
+	call = &teeKeysCall{done: make(chan struct{}), epoch: s.teeKeysEpoch}
+	s.teeKeysFetch = call
+	return call, true
+}
+
+func (s *Session) runTeeKeysFetch(ctx context.Context, call *teeKeysCall) *crypto.PublicKeySet {
 	set, disabled, answered, refusal := probeTeeEnclaveKeySet(ctx)
 
 	s.mu.Lock()
@@ -469,9 +479,16 @@ func (s *Session) TeeSealWentStale(ctx context.Context, err error, sealedTo *cry
 	}
 	s.teeStaleCheckedAt = time.Now()
 	s.teeEnclaveKeySet = nil
+	call, started := s.joinTeeKeysFetchLocked()
 	s.mu.Unlock()
 
-	return s.staleSealVerdict(s.FetchTeeEnclaveKeySet(ctx), sealedTo)
+	var fresh *crypto.PublicKeySet
+	if started {
+		fresh = s.runTeeKeysFetch(ctx, call)
+	} else {
+		fresh = call.wait(ctx)
+	}
+	return s.staleSealVerdict(fresh, sealedTo)
 }
 
 func (s *Session) staleSealVerdict(fresh, sealedTo *crypto.PublicKeySet) (bool, error) {
@@ -507,10 +524,6 @@ func probeTeeEnclaveKeySet(ctx context.Context) (set *crypto.PublicKeySet, disab
 	}
 	att := resp.Attestation
 	commit, err := checkTeeAttestationPosture(servedAttestation{
-		Mode:           att.AttestationMode,
-		Mrenclave:      att.Mrenclave,
-		Quote:          att.SgxQuote,
-		Status:         att.VerificationStatus,
 		SealingPk:      att.EnclavePublicKey,
 		SealingPkKyber: att.EnclavePublicKeyKyber,
 	})
@@ -566,6 +579,74 @@ func SealedRootParentB64(nodeIDHex string, parentKey []byte) string {
 	return base64.StdEncoding.EncodeToString(blob)
 }
 
+var ErrParentKeyUnavailable = errors.New("parent key unavailable: unlock with 'pc uk' and try again")
+
+type NodeRef struct {
+	ID           string
+	SealedParent string
+}
+
+func MintNodeIDHex() (string, error) {
+	var id [16]byte
+	if _, err := rand.Read(id[:]); err != nil {
+		return "", fault("Failed to mint node id", err)
+	}
+	return hex.EncodeToString(id[:]), nil
+}
+
+func SealParentRefB64(nodeIDHex, parentIDHex string, parentKey []byte) (string, error) {
+	if len(parentKey) == 0 {
+		return "", ErrParentKeyUnavailable
+	}
+	nodeID, err := decodeNodeID(nodeIDHex)
+	if err != nil {
+		return "", err
+	}
+	var parentID []byte
+	if parentIDHex != "" {
+		if parentID, err = decodeNodeID(parentIDHex); err != nil {
+			return "", err
+		}
+	}
+	blob, err := crypto.SealParentRef(parentID, nodeID, parentKey)
+	if err != nil {
+		return "", fault("Failed to seal parent ref", err)
+	}
+	return base64.StdEncoding.EncodeToString(blob), nil
+}
+
+func MintSealedNode(parentIDHex string, parentKey []byte) (NodeRef, error) {
+	if len(parentKey) == 0 {
+		return NodeRef{}, ErrParentKeyUnavailable
+	}
+	id, err := MintNodeIDHex()
+	if err != nil {
+		return NodeRef{}, err
+	}
+	sealed, err := SealParentRefB64(id, parentIDHex, parentKey)
+	if err != nil {
+		return NodeRef{}, err
+	}
+	return NodeRef{ID: id, SealedParent: sealed}, nil
+}
+
+func MintSealedRootNode(parentKey []byte) (NodeRef, error) {
+	return MintSealedNode("", parentKey)
+}
+
+func AddNodeRef(options map[string]string, ref NodeRef) {
+	options["e2ee_node_id"] = ref.ID
+	options["e2ee_sealed_parent"] = ref.SealedParent
+}
+
+func decodeNodeID(idHex string) ([]byte, error) {
+	raw, err := hex.DecodeString(idHex)
+	if err != nil || len(raw) != 16 {
+		return nil, fmt.Errorf("node id %q is not 32 hex characters", idHex)
+	}
+	return raw, nil
+}
+
 func (s *Session) NameKey() ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -619,6 +700,13 @@ func (s *Session) AddE2eeNameFields(options map[string]string, fileName, fullPat
 }
 
 func (s *Session) AddE2eeNameFieldsForMkParents(options map[string]string, pathSegments []string) error {
+	return s.AddE2eeNameFieldsForMkParentsWithRefs(options, pathSegments, nil)
+}
+
+func (s *Session) AddE2eeNameFieldsForMkParentsWithRefs(options map[string]string, pathSegments []string, refs []NodeRef) error {
+	if refs != nil && len(refs) != len(pathSegments) {
+		return errors.New("mkdir -p: one parent ref slot per path segment is required")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.hasKeysLocked() {
@@ -634,30 +722,38 @@ func (s *Session) AddE2eeNameFieldsForMkParents(options map[string]string, pathS
 	}
 
 	type segment struct {
-		DisplayName string `json:"e2ee_display_name"`
-		PathToken   string `json:"e2ee_path_token"`
+		DisplayName  string `json:"e2ee_display_name"`
+		PathToken    string `json:"e2ee_path_token"`
+		NodeID       string `json:"node_id,omitempty"`
+		SealedParent string `json:"sealed_parent,omitempty"`
 	}
 
 	segments := make([]segment, 0, len(pathSegments))
 	currentPath := ""
-	for _, part := range pathSegments {
+	for i, part := range pathSegments {
 		if currentPath == "" {
 			currentPath = part
 		} else {
 			currentPath = currentPath + "/" + part
 		}
 		sealedName, err := crypto.SealDisplayName(part, pub)
-		if err != nil {
-			continue
+		if err == nil {
+			var pathToken []byte
+			if pathToken, err = crypto.ComputePathToken(nameKey, currentPath); err == nil {
+				seg := segment{
+					DisplayName: base64.StdEncoding.EncodeToString(sealedName),
+					PathToken:   hex.EncodeToString(pathToken),
+				}
+				if refs != nil {
+					seg.NodeID, seg.SealedParent = refs[i].ID, refs[i].SealedParent
+				}
+				segments = append(segments, seg)
+				continue
+			}
 		}
-		pathToken, err := crypto.ComputePathToken(nameKey, currentPath)
-		if err != nil {
-			continue
+		if refs != nil {
+			return fault("Failed to seal path segment", err)
 		}
-		segments = append(segments, segment{
-			DisplayName: base64.StdEncoding.EncodeToString(sealedName),
-			PathToken:   hex.EncodeToString(pathToken),
-		})
 	}
 
 	if len(segments) > 0 {
@@ -860,7 +956,7 @@ func (s *Session) EncryptForUpload(ctx context.Context, localPath string) (*Uplo
 		teeSealed, err := crypto.SealDataKey(dataKey, teeKeys)
 		if err != nil {
 			os.Remove(tempPath)
-			return nil, fault("Failed to seal data key to enclave", err)
+			return nil, fault("Failed to seal data key to the scanner", err)
 		}
 		teeSealedB64 = base64.StdEncoding.EncodeToString(teeSealed)
 	}

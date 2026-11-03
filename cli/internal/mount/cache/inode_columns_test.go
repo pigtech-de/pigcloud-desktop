@@ -13,22 +13,24 @@ func TestInodeRoundTripsEveryColumn(t *testing.T) {
 	defer db.Close()
 
 	want := &Inode{
-		RemotePath:   "docs/report.pdf",
-		DisplayName:  "report.pdf",
-		IsDir:        false,
-		Size:         4242,
-		Mtime:        1700000001,
-		Cached:       true,
-		Dirty:        true,
-		LastAccess:   1700000002,
-		ContentHash:  "content-hash-value",
-		LocalHash:    "local-hash-value",
-		LocalMtime:   1700000003,
-		SealedKey:    "sealed-key-value",
-		EncMeta:      "enc-meta-value",
-		Etag:         "etag-value",
-		SyncStatus:   StatusFailed,
-		StatusReason: "status-reason-value",
+		RemotePath:    "docs/report.pdf",
+		DisplayName:   "report.pdf",
+		IsDir:         false,
+		Size:          4242,
+		Mtime:         1700000001,
+		Cached:        true,
+		Dirty:         true,
+		LastAccess:    1700000002,
+		ContentHash:   "content-hash-value",
+		LocalHash:     "local-hash-value",
+		LocalMtime:    1700000003,
+		SealedKey:     "sealed-key-value",
+		EncMeta:       "enc-meta-value",
+		Etag:          "etag-value",
+		SyncStatus:    StatusFailed,
+		StatusReason:  "status-reason-value",
+		NodeID:        "0123456789abcdef0123456789abcdef",
+		PendingNodeID: "fedcba9876543210fedcba9876543210",
 	}
 	id, err := db.UpsertInode(want)
 	if err != nil {
@@ -64,6 +66,8 @@ func TestInodeRoundTripsEveryColumn(t *testing.T) {
 		{"Etag", got.Etag, want.Etag},
 		{"SyncStatus", got.SyncStatus, want.SyncStatus},
 		{"StatusReason", got.StatusReason, want.StatusReason},
+		{"NodeID", got.NodeID, want.NodeID},
+		{"PendingNodeID", got.PendingNodeID, want.PendingNodeID},
 	}
 	for _, c := range checks {
 		if c.got != c.want {
@@ -105,7 +109,7 @@ func TestInodeRoundTripsEveryColumn(t *testing.T) {
 }
 
 func TestInodeColumnsCountMatchesScanner(t *testing.T) {
-	const wantColumns = 19
+	const wantColumns = 22
 	if got := len(strings.Split(inodeColumns, ",")); got != wantColumns {
 		t.Fatalf("inodeColumns names %d columns, scanInodeRow scans %d", got, wantColumns)
 	}

@@ -146,7 +146,7 @@ func runTouch(name, targetDir string) {
 	if teeKeys != nil {
 		teeSealed, err := crypto.SealDataKey(dataKey, teeKeys)
 		if err != nil {
-			output.PrintError("Failed to seal data key to enclave: " + err.Error())
+			output.PrintError("Failed to seal data key to the scanner: " + err.Error())
 			ExitWithError()
 		}
 		teeSealedB64 = base64.StdEncoding.EncodeToString(teeSealed)
@@ -187,10 +187,11 @@ func runTouch(name, targetDir string) {
 		fullNodePath = parentPath + "/" + name
 	}
 	cmdutil.AddE2eeNameFields(options, name, fullNodePath, ExitWithError)
+	remint := sealNewNode(ctx, options, resolvedPath, writerParentKey())
 
 	cmdutil.AddPathTokensForAll(options, []string{fullNodePath, parentPath}, e2ee.SelfAndParent, ExitWithError)
 
-	_, payload := cmdutil.ExecuteCommand[api.TouchPayload](ctx, "tc", options, ExitWithError)
+	_, payload := cmdutil.ExecuteCreate[api.TouchPayload](ctx, "tc", options, remint, ExitWithError)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return

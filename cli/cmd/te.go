@@ -19,7 +19,7 @@ var teeCmd = &cobra.Command{
 	GroupID: GroupTools,
 	Aliases: []string{"tee"},
 	Short:   "Review the security scanner's signing keys",
-	Long: `Show and manage the enclave signing keys this account has accepted.
+	Long: `Show and manage the scanner signing keys this account has accepted.
 
 Sanitized files carry no owner signature, so the scanner's signing key is the
 only anchor they have. The CLI pins the first key it is offered and refuses

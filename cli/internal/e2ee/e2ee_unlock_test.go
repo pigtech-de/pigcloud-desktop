@@ -135,6 +135,7 @@ func resetKeyCaches() {
 	defaultSession.pub = nil
 	defaultSession.priv = nil
 	defaultSession.nameKey = nil
+	defaultSession.parentKey = nil
 	defaultSession.signingPub = nil
 	defaultSession.signingPriv = nil
 	defaultSession.teeEnclaveKeySet = nil

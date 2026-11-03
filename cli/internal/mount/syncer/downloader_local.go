@@ -8,6 +8,7 @@ import (
 	"os"
 
 	"pigcloud/internal/mount/cache"
+	"pigcloud/internal/mount/mlog"
 	"pigcloud/internal/mount/vfs"
 )
 
@@ -66,6 +67,59 @@ func (d *Downloader) markLocalConflict(node *vfs.Node, reason string) error {
 	node.Mu.Unlock()
 	d.cacheDB.ClearSyncFailure(node.ID, cache.FailureDownload)
 	return errDownloadLocalChanged
+}
+
+func localDeleteEvidence(db *cache.DB, inode *cache.Inode, remoteEtag string) bool {
+	if db == nil || inode == nil || inode.IsDir || remoteEtag == "" {
+		return false
+	}
+	_, baseline, version, err := db.LocalContentState(inode.ID)
+	return err == nil && baseline != "" && version == remoteEtag
+}
+
+func (d *Downloader) queueMissingAsDelete(node *vfs.Node, localPath string) bool {
+	if _, err := os.Lstat(localPath); !os.IsNotExist(err) {
+		return false
+	}
+	inode, err := d.cacheDB.GetInode(node.ID)
+	if err != nil || inode == nil {
+		return false
+	}
+	node.Mu.RLock()
+	remoteEtag := node.Etag
+	node.Mu.RUnlock()
+	if !localDeleteEvidence(d.cacheDB, inode, remoteEtag) || d.cacheDB.WritebackDisabled() {
+		return false
+	}
+	if onOtherDevice(inode, localPath) {
+		return true
+	}
+	d.missingMu.Lock()
+	d.missing = append(d.missing, inode)
+	d.missingMu.Unlock()
+	return true
+}
+
+func (d *Downloader) flushMissing() {
+	d.missingMu.Lock()
+	missing := d.missing
+	d.missing = nil
+	d.missingMu.Unlock()
+	if massDelete(d.cacheDB, len(missing)) {
+		ids := make([]int64, 0, len(missing))
+		for _, in := range missing {
+			ids = append(ids, in.ID)
+		}
+		d.cacheDB.SetMassDeleteHeld("downloader", ids)
+		mlog.Warnf("downloader: holding %d missing files instead of deleting them remotely", len(missing))
+		return
+	}
+	d.cacheDB.SetMassDeleteHeld("downloader", nil)
+	for _, in := range missing {
+		if !d.deleteQueued(in.ID) {
+			d.queueWriteback(in.ID, "delete", in.RemotePath)
+		}
+	}
 }
 
 func (d *Downloader) localBaseline(nodeID int64) string {

@@ -2,7 +2,9 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -56,7 +58,12 @@ func runMvMulti(args []string) {
 	}
 	if len(sources) > 1 {
 		resolvedTarget := cmdutil.ResolvePath(target)
-		if !cmdutil.IsExistingDirectory(ctx, resolvedTarget) {
+		isDir, err := cmdutil.IsExistingDirectory(ctx, resolvedTarget)
+		if err != nil {
+			output.PrintError("Could not check " + target + ": " + err.Error())
+			ExitWithError()
+		}
+		if !isDir {
 			output.PrintError("Target must be an existing directory when moving multiple sources: " + target)
 			ExitWithError()
 		}
@@ -72,7 +79,7 @@ func init() {
 }
 
 func runMv(source, target string) {
-	relocate("mv", source, target, mvDry, func(ctx context.Context, landed string, payload api.MovePayload) {
+	relocate("mv", source, target, mvDry, addMoveRef, func(ctx context.Context, landed string, payload api.MovePayload) {
 		if payload.Dry {
 			output.PrintInfo("[dry-run] Would move " + output.PrintPath(payload.Source) + " to " + output.PrintPath(payload.Target))
 			return
@@ -92,13 +99,48 @@ func runMv(source, target string) {
 	})
 }
 
-func relocate[T any](command, source, target string, dry bool, done func(ctx context.Context, landed string, payload T)) {
+type addRefsFunc func(ctx context.Context, options map[string]string, resolvedSource, destDir, landed string, parentKey []byte) func(map[string]string) error
+
+func addMoveRef(ctx context.Context, options map[string]string, resolvedSource, destDir, _ string, parentKey []byte) func(map[string]string) error {
+	if parentKey == nil {
+		return nil
+	}
+	source, err := cmdutil.StatRemote(ctx, resolvedSource)
+	if errors.Is(err, cmdutil.ErrRemoteMissing) {
+		err = fmt.Errorf("not found: %s", resolvedSource)
+	}
+	if err != nil {
+		refuseWrite(err)
+		return nil
+	}
+	destID, err := cmdutil.ResolveDirID(ctx, destDir)
+	if err != nil {
+		refuseWrite(err)
+		return nil
+	}
+	sealed, err := e2ee.SealParentRefB64(source.ID, destID, parentKey)
+	if err != nil {
+		refuseWrite(err)
+		return nil
+	}
+	options["e2ee_sealed_parent"] = sealed
+	return nil
+}
+
+func relocate[T any](command, source, target string, dry bool, addRefs addRefsFunc, done func(ctx context.Context, landed string, payload T)) {
 	ctx, cancel := cmdutil.StartAuthed(ExitWithError)
 	defer cancel()
 
 	resolvedSource := cmdutil.ResolvePath(source)
 	landed := cmdutil.ResolvePath(target)
-	if cmdutil.IsExistingDirectory(ctx, landed) || strings.HasSuffix(target, "/") {
+	destDir := path.Dir(landed)
+	isDir, err := cmdutil.IsExistingDirectory(ctx, landed)
+	if err != nil {
+		output.PrintError("Could not check " + target + ": " + err.Error())
+		ExitWithError()
+	}
+	if isDir || strings.HasSuffix(target, "/") {
+		destDir = landed
 		landed = strings.TrimRight(landed, "/") + "/" + filepath.Base(resolvedSource)
 	}
 
@@ -108,9 +150,13 @@ func relocate[T any](command, source, target string, dry bool, done func(ctx con
 	}
 	fullPath, baseName := e2ee.ResolveAndBaseName(landed)
 	cmdutil.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
+	var remint func(map[string]string) error
+	if !dry {
+		remint = addRefs(ctx, options, resolvedSource, destDir, landed, writerParentKey())
+	}
 	cmdutil.AddPathTokensForAll(options, []string{resolvedSource, landed}, e2ee.SelfAndParent, ExitWithError)
 
-	_, payload := cmdutil.ExecuteCommand[T](ctx, command, options, ExitWithError)
+	_, payload := cmdutil.ExecuteCreate[T](ctx, command, options, remint, ExitWithError)
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
 	}

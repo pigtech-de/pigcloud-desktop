@@ -6,9 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"pigcloud/internal/api"
@@ -25,9 +28,17 @@ const (
 	maxRetries = 3
 
 	processBatchSize = 10
+
+	parentWaitDelay = 10 * time.Second
+
+	writebackParallel = 3
 )
 
 var errTeeSealStale = errors.New("upload was sealed to a retired scanner key")
+
+var errDeleteSuperseded = errors.New("local file exists again; its upload replaces the queued delete")
+
+var errRenameCollision = errors.New("a remote item already uses the new name")
 
 type WritebackProcessor struct {
 	vfs      *vfs.VFS
@@ -199,19 +210,35 @@ func (w *WritebackProcessor) processBatch(ctx context.Context) {
 		return
 	}
 
+	var mu sync.Mutex
 	var held []*cache.WritebackEntry
-	for i, entry := range entries {
-		if ctx.Err() != nil {
-			w.requeue(entries[i:])
-			w.requeue(held)
-			return
-		}
-		if w.heldByConflict(entry) {
-			held = append(held, entry)
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, writebackParallel)
+	for _, group := range groupWriteback(entries) {
+		select {
+		case sem <- struct{}{}:
+		case <-ctx.Done():
+			w.requeue(group)
 			continue
 		}
-		w.processEntry(ctx, entry)
+		wg.Go(func() {
+			defer func() { <-sem }()
+			for i, entry := range group {
+				if ctx.Err() != nil {
+					w.requeue(group[i:])
+					return
+				}
+				if w.heldByConflict(entry) {
+					mu.Lock()
+					held = append(held, entry)
+					mu.Unlock()
+					continue
+				}
+				w.processEntry(ctx, entry)
+			}
+		})
 	}
+	wg.Wait()
 	w.requeue(held)
 }
 
@@ -244,7 +271,7 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 		}
 		uploaded, err = upload(ctx, entry)
 		if errors.Is(err, errTeeSealStale) {
-			mlog.Warnf("writeback: the scanner's sealing key changed, sealing %s again", entry.RemotePath)
+			mlog.Warnf("writeback: the scanner's sealing key changed, sealing inode %d again", entry.InodeID)
 			uploaded, err = upload(ctx, entry)
 		}
 	case "mkdir":
@@ -257,8 +284,25 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 		err = fmt.Errorf("unknown action: %s", entry.Action)
 	}
 
+	if errors.Is(err, errDeleteSuperseded) {
+		w.cacheDB.DeleteWriteback(entry.ID)
+		return true
+	}
+	if errors.Is(err, vfs.ErrParentPending) {
+		w.cacheDB.DeferWriteback(entry.ID, err.Error(), entry.Attempts, time.Now().Add(parentWaitDelay).Unix())
+		return false
+	}
 	if err != nil {
 		attempts := entry.Attempts + 1
+		if entry.Action == "upload" {
+			if prev, _ := w.cacheDB.GetSyncFailure(entry.InodeID, cache.FailureUpload); prev != nil && prev.Attempts >= attempts {
+				attempts = prev.Attempts + 1
+			}
+		}
+		if (attempts >= maxRetries || isPermanent(err)) && entry.Action == "rename" {
+			w.abandonRename(entry, err)
+			return false
+		}
 		if attempts >= maxRetries || isPermanent(err) {
 			w.cacheDB.UpdateWriteback(entry.ID, "failed", err.Error(), attempts)
 			w.cacheDB.SetSyncStatus(entry.InodeID, cache.StatusFailed, err.Error())
@@ -285,7 +329,7 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 		} else {
 			delay := writebackRetryDelay(err, attempts)
 			if api.IsRateLimited(err) {
-				mlog.Warnf("writeback: rate limited on %s, next attempt in %v (attempt %d)", entry.RemotePath, delay, attempts)
+				mlog.Warnf("writeback: rate limited on inode %d, next attempt in %v (attempt %d)", entry.InodeID, delay, attempts)
 			}
 			w.cacheDB.SetSyncStatus(entry.InodeID, cache.StatusPending, err.Error())
 			w.cacheDB.DeferWriteback(entry.ID, err.Error(), attempts, time.Now().Add(delay).Unix())
@@ -296,7 +340,23 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 	w.cacheDB.DeleteWriteback(entry.ID)
 	if entry.Action == "upload" {
 		w.cacheDB.ClearSyncFailure(entry.InodeID, cache.FailureUpload)
+		if uploaded.nodeID != "" {
+			w.cacheDB.SetInodeNodeID(entry.InodeID, uploaded.nodeID)
+			if preNode != nil {
+				preNode.Mu.Lock()
+				preNode.NodeID = uploaded.nodeID
+				preNode.Mu.Unlock()
+			}
+		}
 		w.recordUploaded(entry, uploaded.digest, uploaded.etag)
+	}
+	if entry.Action == "delete" {
+		w.finishDelete(entry)
+		return true
+	}
+	if entry.Action == "rename" {
+		w.cacheDB.SetSyncStatus(entry.InodeID, cache.StatusSynced, "")
+		return true
 	}
 	w.emitUpload(entry, uploadBytes, nil)
 	localChanged, localMissing := false, false
@@ -326,7 +386,7 @@ func (w *WritebackProcessor) processEntry(ctx context.Context, entry *cache.Writ
 				nextAction = "delete"
 			}
 			if err := w.cacheDB.EnqueueWriteback(entry.InodeID, nextAction, rp, ""); err != nil {
-				mlog.Errorf("writeback re-enqueue failed (inode %d): %v", entry.InodeID, err)
+				mlog.Errorf("writeback re-enqueue failed (inode %d): %s", entry.InodeID, mlog.Cause(err))
 				w.cacheDB.SetSyncStatus(entry.InodeID, cache.StatusPending, "re-enqueue failed")
 				preNode.Mu.Lock()
 				preNode.Dirty = true
@@ -366,6 +426,7 @@ func (w *WritebackProcessor) recordUploaded(entry *cache.WritebackEntry, digest 
 	if lp, ok := w.localPath(entry.RemotePath); ok {
 		if fi, err := os.Stat(lp); err == nil {
 			mtime = fi.ModTime().Unix()
+			w.cacheDB.SetLocalFileID(entry.InodeID, recordedSignature(fi, time.Now()))
 		}
 	}
 	if len(confirmedEtag) > 0 {
@@ -500,6 +561,11 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 		return uploadedContent{}, fmt.Errorf("no content to upload")
 	}
 
+	ident, err := w.resolveIdentity(ctx, entry, remotePath, false)
+	if err != nil {
+		return uploadedContent{}, err
+	}
+
 	dataKey, err := crypto.GenerateDataKey()
 	if err != nil {
 		return uploadedContent{}, fmt.Errorf("generate data key: %w", err)
@@ -546,6 +612,10 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 		return uploadedContent{}, fmt.Errorf("sign upload: %w", signErr)
 	}
 
+	if ident, err = w.sealIdentity(ident); err != nil {
+		return uploadedContent{}, err
+	}
+
 	e2eeOpts := map[string]string{
 		"sealed_key":         base64.StdEncoding.EncodeToString(sealedKey),
 		"encryption_meta":    base64.StdEncoding.EncodeToString(metaJSON),
@@ -559,14 +629,14 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 	teeKeys := e2ee.FetchTeeEnclaveKeySet(ctx)
 	if teeKeys == nil && !e2ee.TeeScannerDisabledByServer() {
 		if refusal := e2ee.TeeEnclaveKeyRefusal(); refusal != nil {
-			return uploadedContent{}, fmt.Errorf("TEE enclave key refused: %w", refusal)
+			return uploadedContent{}, fmt.Errorf("scanner key refused: %w", refusal)
 		}
-		return uploadedContent{}, fmt.Errorf("TEE enclave key unavailable; scanner cannot decrypt the upload")
+		return uploadedContent{}, fmt.Errorf("scanner key unavailable; scanner cannot decrypt the upload")
 	}
 	if teeKeys != nil {
 		teeSealed, err := crypto.SealDataKey(dataKey, teeKeys)
 		if err != nil {
-			return uploadedContent{}, fmt.Errorf("seal data key to enclave: %w", err)
+			return uploadedContent{}, fmt.Errorf("seal data key to the scanner: %w", err)
 		}
 		e2eeOpts["tee_sealed_key"] = base64.StdEncoding.EncodeToString(teeSealed)
 	}
@@ -586,6 +656,8 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 	}
 
 	addPathTokens(e2eeOpts, remotePath, w.vfs.NameKey)
+	e2eeOpts["e2ee_node_id"] = ident.nodeID
+	e2eeOpts["e2ee_sealed_parent"] = ident.sealed
 
 	identity, err := uploadIdentityKey(w.vfs.NameKey, cache.UploadKeyFromExtra(entry.ExtraJSON), remotePath, encMeta.PlaintextSHA256)
 	if err != nil {
@@ -597,12 +669,17 @@ func (w *WritebackProcessor) processUpload(ctx context.Context, entry *cache.Wri
 	if idx := strings.LastIndex(remotePath, "/"); idx >= 0 {
 		uploadDir = "/" + remotePath[:idx]
 	}
-	resp, err := w.client.Upload(ctx, tmpEncPath, uploadDir, nil, e2eeOpts)
+	resp, err := w.sendCreate(ctx, entry, remotePath, e2eeOpts, func(opts map[string]string) (*api.Response, error) {
+		return w.client.Upload(ctx, tmpEncPath, uploadDir, nil, maps.Clone(opts))
+	})
 	if err != nil {
+		if isPermanent(err) {
+			return uploadedContent{}, err
+		}
 		if teeKeys != nil {
 			stale, refusal := e2ee.TeeSealWentStale(ctx, err, teeKeys)
 			if refusal != nil {
-				return uploadedContent{}, fmt.Errorf("TEE enclave key refused: %w", refusal)
+				return uploadedContent{}, fmt.Errorf("scanner key refused: %w", refusal)
 			}
 			if stale {
 				return uploadedContent{}, fmt.Errorf("%w: %w", errTeeSealStale, classifyUploadError(err))
@@ -629,6 +706,9 @@ func classifyUploadError(err error) error {
 }
 
 func (w *WritebackProcessor) processMkdir(ctx context.Context, entry *cache.WritebackEntry) error {
+	if active, err := w.cacheDB.HasActiveWriteback(entry.InodeID, "delete"); err != nil || active {
+		return vfs.ErrParentPending
+	}
 	options := map[string]string{
 		"source": "/" + entry.RemotePath,
 	}
@@ -644,18 +724,127 @@ func (w *WritebackProcessor) processMkdir(ctx context.Context, entry *cache.Writ
 	if token, err := crypto.ComputePathToken(w.vfs.NameKey, entry.RemotePath); err == nil {
 		options["e2ee_path_token"] = fmt.Sprintf("%x", token)
 	}
-
-	resp, err := w.client.Execute(ctx, "mk", options)
+	ident, err := w.createIdentity(ctx, entry, entry.RemotePath, false)
 	if err != nil {
 		return fmt.Errorf("mkdir: %w", err)
+	}
+	options["e2ee_node_id"] = ident.nodeID
+	options["e2ee_sealed_parent"] = ident.sealed
+
+	resp, err := w.sendCreate(ctx, entry, entry.RemotePath, options, func(opts map[string]string) (*api.Response, error) {
+		return w.client.Execute(ctx, "mk", opts)
+	})
+	if err != nil {
+		return fmt.Errorf("mkdir: %w", err)
+	}
+	if !resp.Success && resp.ErrorCode == "path_exists" {
+		if _, err := w.vfs.LookupNodeID(ctx, entry.RemotePath); err != nil {
+			return fmt.Errorf("mkdir: folder exists but its id did not resolve: %w", err)
+		}
+		return nil
 	}
 	if !resp.Success {
 		return fmt.Errorf("mkdir: %s", resp.Message)
 	}
+	w.cacheDB.SetInodeNodeID(entry.InodeID, options["e2ee_node_id"])
 	return nil
 }
 
+type nodeIdentity struct {
+	nodeID, parentID, sealed string
+}
+
+func (w *WritebackProcessor) resolveIdentity(ctx context.Context, entry *cache.WritebackEntry, remotePath string, remint bool) (nodeIdentity, error) {
+	x := cache.ParseWritebackExtra(entry.ExtraJSON)
+	nodeID := x.NodeID
+	if remint {
+		nodeID, x = "", cache.WritebackExtra{}
+	} else if nodeID == "" {
+		if inode, err := w.cacheDB.GetInode(entry.InodeID); err == nil && inode != nil {
+			nodeID = inode.NodeID
+			if nodeID == "" {
+				nodeID = inode.PendingNodeID
+			}
+		}
+	}
+	if nodeID == "" {
+		var err error
+		if nodeID, err = cache.MintNodeID(); err != nil {
+			return nodeIdentity{}, err
+		}
+		w.cacheDB.SetPendingNodeID(entry.InodeID, nodeID)
+	}
+	parentID, err := w.vfs.ResolveNodeID(ctx, cache.RemoteParentPath(remotePath))
+	if errors.Is(err, vfs.ErrParentPending) || isPermanent(err) {
+		return nodeIdentity{}, err
+	}
+	if err != nil {
+		return nodeIdentity{}, fmt.Errorf("parent folder id unresolved, will retry: %w", err)
+	}
+	ident := nodeIdentity{nodeID: nodeID, parentID: parentID}
+	if x.SealedParent != "" && x.NodeID == nodeID && x.ParentID == parentID {
+		ident.sealed = x.SealedParent
+	}
+	return ident, nil
+}
+
+func (w *WritebackProcessor) sealIdentity(ident nodeIdentity) (nodeIdentity, error) {
+	if ident.sealed != "" {
+		return ident, nil
+	}
+	sealed, err := w.vfs.SealParentRef(ident.nodeID, ident.parentID)
+	if err != nil {
+		return nodeIdentity{}, err
+	}
+	ident.sealed = sealed
+	return ident, nil
+}
+
+func (w *WritebackProcessor) createIdentity(ctx context.Context, entry *cache.WritebackEntry, remotePath string, remint bool) (nodeIdentity, error) {
+	ident, err := w.resolveIdentity(ctx, entry, remotePath, remint)
+	if err != nil {
+		return nodeIdentity{}, err
+	}
+	return w.sealIdentity(ident)
+}
+
+func (w *WritebackProcessor) sendCreate(ctx context.Context, entry *cache.WritebackEntry, remotePath string, options map[string]string, send func(map[string]string) (*api.Response, error)) (*api.Response, error) {
+	resp, err := e2ee.SendCreate(func() (*api.Response, error) { return send(options) }, func() error {
+		ident, err := w.createIdentity(ctx, entry, remotePath, true)
+		if err != nil {
+			return err
+		}
+		options["e2ee_node_id"], options["e2ee_sealed_parent"] = ident.nodeID, ident.sealed
+		x := cache.ParseWritebackExtra(entry.ExtraJSON)
+		x.NodeID, x.ParentID, x.SealedParent = ident.nodeID, ident.parentID, ident.sealed
+		entry.ExtraJSON = x.Marshal()
+		return w.cacheDB.SetWritebackExtra(entry.ID, entry.ExtraJSON)
+	})
+	if api.HasErrorCode(resp, err, e2ee.CodeNodeIDTaken) {
+		msg := "the server refused the item's id twice"
+		if resp != nil && resp.Message != "" {
+			msg = resp.Message
+		} else if err != nil {
+			msg = err.Error()
+		}
+		return resp, permanent(errors.New(msg))
+	}
+	return resp, err
+}
+
 func (w *WritebackProcessor) processDelete(ctx context.Context, entry *cache.WritebackEntry) error {
+	if inode, changed := w.localFileBack(entry); inode != nil {
+		if !changed {
+			return errDeleteSuperseded
+		}
+		if inode.SyncStatus != cache.StatusConflict {
+			w.cacheDB.MarkDirty(inode.ID)
+		}
+		if err := w.cacheDB.EnqueueWriteback(inode.ID, "upload", entry.RemotePath, ""); err != nil {
+			return err
+		}
+		return errDeleteSuperseded
+	}
 	options := map[string]string{
 		"source": "/" + entry.RemotePath,
 	}
@@ -668,7 +857,68 @@ func (w *WritebackProcessor) processDelete(ctx context.Context, entry *cache.Wri
 	if !resp.Success {
 		return fmt.Errorf("delete: %s", resp.Message)
 	}
+	w.cacheDB.ClearNodeIDs(entry.InodeID, true)
 	return nil
+}
+
+func (w *WritebackProcessor) finishDelete(entry *cache.WritebackEntry) {
+	if active, _ := w.cacheDB.HasActiveWriteback(entry.InodeID, "upload"); active {
+		w.cacheDB.MarkDirty(entry.InodeID)
+		return
+	}
+	if active, _ := w.cacheDB.HasActiveWriteback(entry.InodeID, "mkdir"); active {
+		w.cacheDB.SetSyncStatus(entry.InodeID, cache.StatusPending, "")
+		return
+	}
+	w.cacheDB.MarkSynced(entry.InodeID, "")
+	hashes, err := w.cacheDB.PruneInodeTree(entry.RemotePath)
+	if err != nil {
+		mlog.Warnf("writeback: drop rows after deleting inode %d: %s", entry.InodeID, mlog.Cause(err))
+	}
+	for _, h := range hashes {
+		cache.ReleaseBlob(w.cacheDB, w.store, h, 0)
+	}
+	if w.vfs == nil {
+		return
+	}
+	if node := w.vfs.NodeByID(entry.InodeID); node != nil && node.Parent != nil {
+		w.vfs.DetachChild(node.Parent, node.Name)
+	}
+}
+
+func (w *WritebackProcessor) localFileBack(entry *cache.WritebackEntry) (*cache.Inode, bool) {
+	lp, ok := w.localPath(entry.RemotePath)
+	if !ok {
+		return nil, false
+	}
+	inode, err := w.cacheDB.GetInode(entry.InodeID)
+	if err != nil || inode == nil || inode.IsDir {
+		return nil, false
+	}
+	if fi, err := os.Lstat(lp); err != nil || !fi.Mode().IsRegular() {
+		return nil, false
+	}
+	dir, err := os.Open(filepath.Dir(lp))
+	if err != nil {
+		return nil, false
+	}
+	defer dir.Close()
+	names, err := dir.Readdirnames(-1)
+	if err != nil {
+		return nil, false
+	}
+	if !slices.Contains(names, filepath.Base(lp)) {
+		return nil, false
+	}
+	if inode.Dirty {
+		return inode, true
+	}
+	_, baseline, _, err := w.cacheDB.LocalContentState(inode.ID)
+	if err != nil || baseline == "" {
+		return inode, true
+	}
+	sum, err := hashLocalFile(lp)
+	return inode, err != nil || sum != baseline
 }
 
 func (w *WritebackProcessor) processRename(ctx context.Context, entry *cache.WritebackEntry) error {
@@ -689,7 +939,30 @@ func (w *WritebackProcessor) processRename(ctx context.Context, entry *cache.Wri
 	addPathTokens(options, entry.RemotePath, w.vfs.NameKey)
 	addPathTokens(options, extra.Target, w.vfs.NameKey)
 
+	var movedID string
+	if inode, err := w.cacheDB.GetInode(entry.InodeID); err == nil && inode != nil {
+		movedID = inode.NodeID
+	}
+	if movedID == "" {
+		var err error
+		if movedID, err = w.vfs.LookupNodeID(ctx, entry.RemotePath); err != nil {
+			return fmt.Errorf("rename: moved item id unresolved, will retry: %w", err)
+		}
+	}
+	destID, err := w.vfs.ResolveNodeID(ctx, cache.RemoteParentPath(extra.Target))
+	if err != nil {
+		return fmt.Errorf("rename: destination folder id unresolved, will retry: %w", err)
+	}
+	sealed, err := w.vfs.SealParentRef(movedID, destID)
+	if err != nil {
+		return fmt.Errorf("rename: %w", err)
+	}
+	options["e2ee_sealed_parent"] = sealed
+
 	resp, err := w.client.Execute(ctx, "mv", options)
+	if api.HasErrorCode(resp, err, "path_exists") {
+		return permanent(errRenameCollision)
+	}
 	if err != nil {
 		return fmt.Errorf("rename: %w", err)
 	}
@@ -697,4 +970,17 @@ func (w *WritebackProcessor) processRename(ctx context.Context, entry *cache.Wri
 		return fmt.Errorf("rename: %s", resp.Message)
 	}
 	return nil
+}
+
+func (w *WritebackProcessor) abandonRename(entry *cache.WritebackEntry, err error) {
+	w.cacheDB.DeleteWriteback(entry.ID)
+	inode, gerr := w.cacheDB.GetInode(entry.InodeID)
+	if gerr != nil || inode == nil {
+		return
+	}
+	requeueTree(w.cacheDB, inode.RemotePath, w.localPath)
+	if errors.Is(err, errRenameCollision) && !inode.IsDir {
+		w.cacheDB.MarkLocalConflict(inode.ID, errRenameCollision.Error())
+	}
+	mlog.Warnf("writeback: move of inode %d failed (%s); re-creating it under the new name", inode.ID, mlog.Cause(err))
 }

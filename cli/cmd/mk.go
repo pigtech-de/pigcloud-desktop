@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"strings"
+	"path"
 
 	"pigcloud/internal/api"
 	"pigcloud/internal/cmdutil"
@@ -40,27 +40,18 @@ func runMk(targetPath string) {
 	defer cancel()
 
 	resolvedPath := cmdutil.ResolvePath(targetPath)
-	options := map[string]string{"source": resolvedPath}
+	parentKey := writerParentKey()
+	var payload api.CdPayload
 	if mkParents {
-		options["parents"] = "true"
-		fullPath, _ := e2ee.ResolveAndBaseName(resolvedPath)
-		segments := strings.Split(strings.Trim(fullPath, "/"), "/")
-		var nonEmpty []string
-		for _, s := range segments {
-			s = strings.TrimSpace(s)
-			if s != "" && s != "." && s != ".." {
-				nonEmpty = append(nonEmpty, s)
-			}
-		}
-		cmdutil.AddE2eeNameFieldsForMkParents(options, nonEmpty, ExitWithError)
+		_, payload = ensureFolderChain[api.CdPayload](ctx, resolvedPath, parentKey)
 	} else {
+		options := map[string]string{"source": resolvedPath}
 		fullPath, baseName := e2ee.ResolveAndBaseName(resolvedPath)
 		cmdutil.AddE2eeNameFields(options, baseName, fullPath, ExitWithError)
+		remint := sealNewNode(ctx, options, path.Dir(resolvedPath), parentKey)
+		cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
+		_, payload = cmdutil.ExecuteCreate[api.CdPayload](ctx, "mk", options, remint, ExitWithError)
 	}
-
-	cmdutil.AddPathTokensFor(options, resolvedPath, e2ee.SelfAndParent, ExitWithError)
-
-	_, payload := cmdutil.ExecuteCommand[api.CdPayload](ctx, "mk", options, ExitWithError)
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return

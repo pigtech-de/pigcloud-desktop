@@ -544,6 +544,8 @@ func TestMkdirSendsE2EEFields(t *testing.T) {
 	env := newVFSEnv(t, "Base")
 	env.fs.Root.Loaded = true
 	env.srv.handleJSON("mk", `{"success":true}`)
+	const baseID = "0123456789abcdef0123456789abcdef"
+	env.srv.handleJSON("in", `{"success":true,"details":{"nodeId":"`+baseID+`","type":"directory"}}`)
 
 	node, err := env.fs.Mkdir(env.fs.Root, "Neu")
 	if err != nil {
@@ -584,6 +586,22 @@ func TestMkdirSendsE2EEFields(t *testing.T) {
 		if tokens[p] != hex.EncodeToString(tok) {
 			t.Errorf("path_tokens[%q] wrong or missing", p)
 		}
+	}
+
+	if opts["e2ee_node_id"] != node.NodeID || node.NodeID == "" {
+		t.Errorf("e2ee_node_id = %q, node remembers %q", opts["e2ee_node_id"], node.NodeID)
+	}
+	ref, err := base64.StdEncoding.DecodeString(opts["e2ee_sealed_parent"])
+	if err != nil {
+		t.Fatalf("sealed parent not base64: %v", err)
+	}
+	idBytes, _ := hex.DecodeString(node.NodeID)
+	parent, err := crypto.OpenParentRef(ref, idBytes, env.fs.ParentKey, nil)
+	if err != nil || hex.EncodeToString(parent) != baseID {
+		t.Errorf("ref opens to %x (%v), want the base folder %s", parent, err, baseID)
+	}
+	if inode, _ := env.db.GetInode(node.ID); inode == nil || inode.NodeID != node.NodeID {
+		t.Errorf("the created folder's id was not stored on its inode: %+v", inode)
 	}
 
 	if _, err := env.fs.Mkdir(env.fs.Root, "bad.name"); err == nil {
@@ -718,6 +736,7 @@ func TestRenameSyncedFile(t *testing.T) {
 	root.Loaded = true
 
 	file := NewFileNode("old.txt", "old.txt", 3, time.Now(), root)
+	file.NodeID = "00000000000000000000000000000a01"
 	root.AddChild(file)
 	id, _ := env.db.UpsertInode(nodeToInode(file, 0))
 	file.ID = id
@@ -742,15 +761,62 @@ func TestRenameSyncedFile(t *testing.T) {
 	if len(calls) != 1 || calls[0].Options["source"] != "/old.txt" || calls[0].Options["target"] != "/new.txt" {
 		t.Errorf("mv request: %+v", calls)
 	}
+	if len(calls) == 1 {
+		ref, _ := base64.StdEncoding.DecodeString(calls[0].Options["e2ee_sealed_parent"])
+		idBytes, _ := hex.DecodeString(file.NodeID)
+		if parent, err := crypto.OpenParentRef(ref, idBytes, env.fs.ParentKey, nil); err != nil || parent != nil {
+			t.Errorf("a move into the root must seal the root sentinel: %x %v", parent, err)
+		}
+	}
 
 	if err := env.fs.Rename(root, "missing", root, "x"); err != ErrNotFound {
 		t.Errorf("missing: %v", err)
 	}
-	if err := env.fs.Rename(root, "new.txt", root, "bad!name.txt"); err != ErrInvalidName {
+	if err := env.fs.Rename(root, "new.txt", root, "bad?name.txt"); err != ErrInvalidName {
 		t.Errorf("invalid file name: %v", err)
 	}
 	if err := env.fs.Rename(root, "new.txt", root, "a/b"); err != ErrInvalidName {
 		t.Errorf("path separator in name: %v", err)
+	}
+}
+
+func TestRenameOverAFileAsksTheServerToReplaceIt(t *testing.T) {
+	env := newVFSEnv(t, "")
+	env.srv.handleJSON("mv", `{"success":true}`)
+	root := env.fs.Root
+	root.Loaded = true
+	for i, name := range []string{".doc.txt.swp", "doc.txt", "notes.txt"} {
+		file := NewFileNode(name, name, 3, time.Now(), root)
+		file.NodeID = fmt.Sprintf("%032x", 0xb01+i)
+		root.AddChild(file)
+		id, _ := env.db.UpsertInode(nodeToInode(file, 0))
+		file.ID = id
+		env.fs.trackNode(file)
+	}
+	folder := NewDirNode("archive", "archive", root)
+	folder.NodeID = fmt.Sprintf("%032x", 0xb10)
+	root.AddChild(folder)
+
+	if err := env.fs.Rename(root, ".doc.txt.swp", root, "doc.txt"); err != nil {
+		t.Fatalf("rename over a file: %v", err)
+	}
+	if err := env.fs.Rename(root, "notes.txt", root, "fresh.txt"); err != nil {
+		t.Fatalf("plain rename: %v", err)
+	}
+	if err := env.fs.Rename(root, "fresh.txt", root, "archive"); err != nil {
+		t.Fatalf("rename onto a folder: %v", err)
+	}
+	calls := env.srv.callsFor("mv")
+	if len(calls) != 3 {
+		t.Fatalf("mv calls = %d", len(calls))
+	}
+	if got := calls[0].Options["conflict_strategy"]; got != "replace" {
+		t.Errorf("rename over an existing file sent conflict_strategy %q, want replace", got)
+	}
+	for i, call := range calls[1:] {
+		if got, ok := call.Options["conflict_strategy"]; ok {
+			t.Errorf("call %d (%s -> %s) sent conflict_strategy %q; only a file replacing a file may", i+1, call.Options["source"], call.Options["target"], got)
+		}
 	}
 }
 
@@ -768,11 +834,13 @@ func TestRenameDirRewritesSubtree(t *testing.T) {
 	dir.AddChild(sub)
 	leaf := NewFileNode("leaf.txt", "Alt/Sub/leaf.txt", 1, time.Now(), sub)
 	sub.AddChild(leaf)
-	for _, n := range []*Node{dir, sub, leaf} {
+	for i, n := range []*Node{dir, sub, leaf} {
 		id, _ := env.db.UpsertInode(nodeToInode(n, 0))
 		n.ID = id
 		env.fs.trackNode(n)
+		env.db.SetInodeNodeID(id, fmt.Sprintf("%032x", 0xb00+i))
 	}
+	dir.NodeID = fmt.Sprintf("%032x", 0xb00)
 
 	if err := env.fs.Rename(root, "Alt", root, "Neu"); err != nil {
 		t.Fatalf("rename dir: %v", err)
@@ -785,6 +853,8 @@ func TestRenameDirRewritesSubtree(t *testing.T) {
 	}
 	if inode, _ := env.db.GetInodeByPath("Neu/Sub/leaf.txt"); inode == nil {
 		t.Error("descendant cache row not rewritten")
+	} else if inode.NodeID != fmt.Sprintf("%032x", 0xb02) {
+		t.Errorf("rewritten descendant lost its server id: %q", inode.NodeID)
 	}
 	if inode, _ := env.db.GetInodeByPath("Alt/Sub/leaf.txt"); inode != nil {
 		t.Error("old descendant cache row survived")

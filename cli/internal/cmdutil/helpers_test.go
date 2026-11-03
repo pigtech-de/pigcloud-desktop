@@ -221,11 +221,12 @@ func TestExecuteCommandExitsOnMalformedPayload(t *testing.T) {
 func TestIsExistingDirectory(t *testing.T) {
 	isolateKeyEnv(t)
 
-	if !IsExistingDirectory(context.Background(), "/") {
-		t.Error("root must always be a directory")
+	ctx := context.Background()
+	if ok, err := IsExistingDirectory(ctx, "/"); !ok || err != nil {
+		t.Errorf("root must always be a directory: %v %v", ok, err)
 	}
-	if !IsExistingDirectory(context.Background(), "") {
-		t.Error("empty path must count as root")
+	if ok, err := IsExistingDirectory(ctx, ""); !ok || err != nil {
+		t.Errorf("empty path must count as root: %v %v", ok, err)
 	}
 
 	var mu sync.Mutex
@@ -235,22 +236,35 @@ func TestIsExistingDirectory(t *testing.T) {
 		k := kind
 		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"success":true,"details":{"type":%q}}`, k)
+		fmt.Fprintf(w, `{"success":true,"details":{"nodeId":"0123456789abcdef0123456789abcdef","type":%q}}`, k)
 	})
 
-	if !IsExistingDirectory(context.Background(), "/Docs") {
-		t.Error("directory probe returned false")
+	if ok, err := IsExistingDirectory(ctx, "/Docs"); !ok || err != nil {
+		t.Errorf("directory probe returned %v %v", ok, err)
 	}
 	mu.Lock()
 	kind = "file"
 	mu.Unlock()
-	if IsExistingDirectory(context.Background(), "/Docs/a.txt") {
-		t.Error("file reported as directory")
+	if ok, err := IsExistingDirectory(ctx, "/Docs/a.txt"); ok || err != nil {
+		t.Errorf("file reported as %v %v", ok, err)
 	}
 
-	fakeEndpoint(t, jsonHandler(`{"success":false,"message":"gone"}`))
-	if IsExistingDirectory(context.Background(), "/missing") {
-		t.Error("server rejection reported as directory")
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"success":false,"message":"gone"}`)
+	})
+	if ok, err := IsExistingDirectory(ctx, "/missing"); ok || err != nil {
+		t.Errorf("a clean not-found must read as absent, got %v %v", ok, err)
+	}
+
+	fakeEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"success":false,"message":"refused"}`)
+	})
+	if _, err := IsExistingDirectory(ctx, "/Docs"); err == nil {
+		t.Error("a refused probe read as absent: mv would rename onto a directory it could not see")
 	}
 }
 

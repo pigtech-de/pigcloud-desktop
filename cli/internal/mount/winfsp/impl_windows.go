@@ -198,7 +198,7 @@ func (fs *pigFS) Open(path string, flags int) (errc int, fh uint64) {
 		return -cgofuse.ENOENT, 0
 	}
 	if err := fs.vfs.Open(node); err != nil {
-		mlog.Warnf("winfsp: Open(%s) failed: %v", path, err)
+		mlog.Warnf("winfsp: open of inode %d failed (%s)", node.ID, mlog.Cause(err))
 		return -cgofuse.EIO, 0
 	}
 	return 0, fs.allocHandle(node)
@@ -212,7 +212,7 @@ func (fs *pigFS) Read(path string, buff []byte, ofst int64, fh uint64) int {
 		}
 		data, err := fs.vfs.Read(h.node, ofst, len(buff))
 		if err != nil {
-			mlog.Warnf("winfsp: Read(%s, off=%d, sz=%d) failed: %v", path, ofst, len(buff), err)
+			mlog.Warnf("winfsp: read of inode %d (off=%d, sz=%d) failed (%s)", h.node.ID, ofst, len(buff), mlog.Cause(err))
 			return -cgofuse.EIO
 		}
 		if data == nil {

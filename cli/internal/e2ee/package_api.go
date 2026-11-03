@@ -3,6 +3,7 @@ package e2ee
 import (
 	"context"
 
+	"pigcloud/internal/api"
 	"pigcloud/internal/crypto"
 )
 
@@ -56,6 +57,26 @@ func AddE2eeNameFields(options map[string]string, fileName, fullPath string) err
 
 func AddE2eeNameFieldsForMkParents(options map[string]string, pathSegments []string) error {
 	return defaultSession.AddE2eeNameFieldsForMkParents(options, pathSegments)
+}
+
+func AddE2eeNameFieldsForMkParentsWithRefs(options map[string]string, pathSegments []string, refs []NodeRef) error {
+	return defaultSession.AddE2eeNameFieldsForMkParentsWithRefs(options, pathSegments, refs)
+}
+
+func StatRemote(ctx context.Context, exec api.Executor, remotePath string) (RemoteNode, error) {
+	return defaultSession.StatRemote(ctx, exec, remotePath)
+}
+
+func ResolveDirID(ctx context.Context, exec api.Executor, remotePath string) (string, error) {
+	return defaultSession.ResolveDirID(ctx, exec, remotePath)
+}
+
+func MintRefIn(ctx context.Context, exec api.Executor, dirPath string, parentKey []byte) (NodeRef, error) {
+	return defaultSession.MintRefIn(ctx, exec, dirPath, parentKey)
+}
+
+func EnsureFolderChain(ctx context.Context, exec api.Executor, remotePath string, parentKey []byte) (FolderChain, error) {
+	return defaultSession.EnsureFolderChain(ctx, exec, remotePath, parentKey)
 }
 
 func ComputePathTokenMaps(paths []string) (canonicalJSON, legacyJSON string, err error) {

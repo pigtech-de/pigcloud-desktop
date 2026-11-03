@@ -1,5 +1,6 @@
 window.PigcloudAccountPassword = (() => {
     let pending = null;
+    let finishOpen = null;
 
     function translate(key, fallback) {
         const value = window.t(key);
@@ -65,12 +66,6 @@ window.PigcloudAccountPassword = (() => {
             "current-password",
         );
         passwordSection.appendChild(pwField);
-        const errorEl = document.createElement("p");
-        errorEl.className = "text-small status-text status-invalid";
-        errorEl.id = "account-password-error";
-        errorEl.setAttribute("role", "alert");
-        errorEl.hidden = true;
-        passwordSection.appendChild(errorEl);
 
         let passkeyLink = null;
         if (opts.allowPasskey) {
@@ -150,7 +145,7 @@ window.PigcloudAccountPassword = (() => {
         footer.appendChild(submitBtn);
 
         return {
-            overlay, content, titleEl, messageEl, errorEl,
+            overlay, content, titleEl, messageEl,
             pwInput, rkInput, newPwInput, confirmPwInput,
             cancelBtn, submitBtn, submitLabel, closeBtn, passkeyLink,
             passwordSection, recoverySection, recoveryLinkP, backLink,
@@ -170,13 +165,17 @@ window.PigcloudAccountPassword = (() => {
                 closers: [els.cancelBtn],
                 escape: false,
                 restoreFocus: true,
-                onClose: () => resolve(outcome),
+                onClose: () => {
+                    finishOpen = null;
+                    resolve(outcome);
+                },
             });
 
             const finish = (result) => {
                 outcome = result;
                 modal.close();
             };
+            finishOpen = finish;
 
             const switchToRecovery = () => {
                 mode = "recovery";
@@ -196,17 +195,18 @@ window.PigcloudAccountPassword = (() => {
                 requestAnimationFrame(() => els.pwInput.focus());
             };
 
-            const showError = (key, fallback) => {
-                els.errorEl.textContent = translate(key, fallback);
-                els.errorEl.hidden = false;
+            const showError = (input, key, fallback) => {
+                window.showToast(translate(key, fallback), "error");
+                input.setAttribute("aria-invalid", "true");
+                input.addEventListener("input", () => input.removeAttribute("aria-invalid"), {once: true});
+                input.focus();
             };
 
             const submit = () => {
-                els.errorEl.hidden = true;
                 if (mode === "password") {
                     const password = els.pwInput.value;
                     if (!password) {
-                        showError("sudoPasswordRequired", "Password required");
+                        showError(els.pwInput, "sudoPasswordRequired", "Password required");
                         return;
                     }
                     finish({mode: "password", password});
@@ -216,15 +216,15 @@ window.PigcloudAccountPassword = (() => {
                 const newPassword = els.newPwInput.value;
                 const confirmPassword = els.confirmPwInput.value;
                 if (!recoveryKey) {
-                    showError("e2eeRecoveryKeyInputLabel", "Recovery key required");
+                    showError(els.rkInput, "e2eeRecoveryKeyInputLabel", "Recovery key required");
                     return;
                 }
                 if (!newPassword) {
-                    showError("e2eeRecoveryPasswordRequired", "Please enter a new password.");
+                    showError(els.newPwInput, "e2eeRecoveryPasswordRequired", "Please enter a new password.");
                     return;
                 }
                 if (newPassword !== confirmPassword) {
-                    showError("e2eeRecoveryPasswordMismatch", "Passwords do not match.");
+                    showError(els.confirmPwInput, "e2eeRecoveryPasswordMismatch", "Passwords do not match.");
                     return;
                 }
                 finish({mode: "recovery", recoveryKey, newPassword});
@@ -273,5 +273,9 @@ window.PigcloudAccountPassword = (() => {
         return pending;
     }
 
-    return {requestPassword};
+    function cancel() {
+        if (finishOpen) finishOpen(null);
+    }
+
+    return {requestPassword, cancel};
 })();

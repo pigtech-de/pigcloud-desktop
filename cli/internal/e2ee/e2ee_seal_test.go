@@ -377,17 +377,13 @@ func (s *teeServer) set(build func(*api.TeeAttestationResponse)) {
 	s.mu.Unlock()
 }
 
-func trustedSgx(pub *crypto.PublicKeySet) func(*api.TeeAttestationResponse) {
+func servedScanner(pub *crypto.PublicKeySet) func(*api.TeeAttestationResponse) {
 	return func(r *api.TeeAttestationResponse) {
 		r.Success = true
 		r.Enabled = true
 		r.Available = true
 		r.Attestation.EnclavePublicKey = b64(pub.X25519[:])
 		r.Attestation.EnclavePublicKeyKyber = b64(pub.Kyber)
-		r.Attestation.AttestationMode = "epid"
-		r.Attestation.Mrenclave = "aa" + strings.Repeat("bb", 31)
-		r.Attestation.SgxQuote = b64([]byte("quote"))
-		r.Attestation.VerificationStatus = "trusted"
 	}
 }
 
@@ -402,25 +398,7 @@ func TestFetchTeeEnclaveKeySetAttestationGate(t *testing.T) {
 		mutate     func(*api.TeeAttestationResponse)
 		wantKeySet bool
 	}{
-		{"sgx trusted", nil, true},
-		{"sgx unverified", func(r *api.TeeAttestationResponse) {
-			r.Attestation.VerificationStatus = "unverified"
-		}, false},
-		{"sgx untrusted", func(r *api.TeeAttestationResponse) {
-			r.Attestation.VerificationStatus = "untrusted"
-		}, false},
-		{"untrusted outside sgx", func(r *api.TeeAttestationResponse) {
-			r.Attestation.AttestationMode = "dev"
-			r.Attestation.Mrenclave = ""
-			r.Attestation.SgxQuote = ""
-			r.Attestation.VerificationStatus = "untrusted"
-		}, false},
-		{"dev mode unverified stays permissive", func(r *api.TeeAttestationResponse) {
-			r.Attestation.AttestationMode = "dev"
-			r.Attestation.Mrenclave = ""
-			r.Attestation.SgxQuote = ""
-			r.Attestation.VerificationStatus = "unverified"
-		}, true},
+		{"well-formed keys", nil, true},
 		{"scanner unavailable", func(r *api.TeeAttestationResponse) { r.Available = false }, false},
 		{"request unsuccessful", func(r *api.TeeAttestationResponse) { r.Success = false }, false},
 		{"x25519 one byte short", func(r *api.TeeAttestationResponse) {
@@ -442,7 +420,7 @@ func TestFetchTeeEnclaveKeySetAttestationGate(t *testing.T) {
 			isolateKeyEnv(t)
 			srv := newTeeServer(t)
 			srv.set(func(r *api.TeeAttestationResponse) {
-				trustedSgx(enclavePub)(r)
+				servedScanner(enclavePub)(r)
 				if tc.mutate != nil {
 					tc.mutate(r)
 				}
@@ -477,14 +455,14 @@ func TestFetchTeeEnclaveKeySetDoesNotCacheFailures(t *testing.T) {
 	srv := newTeeServer(t)
 
 	srv.set(func(r *api.TeeAttestationResponse) {
-		trustedSgx(enclavePub)(r)
-		r.Attestation.VerificationStatus = "unverified"
+		servedScanner(enclavePub)(r)
+		r.Available = false
 	})
 	if got := FetchTeeEnclaveKeySet(context.Background()); got != nil {
-		t.Fatal("an unverified SGX attestation was accepted")
+		t.Fatal("an unavailable scanner yielded a sealing target")
 	}
 
-	srv.set(trustedSgx(enclavePub))
+	srv.set(servedScanner(enclavePub))
 	got := FetchTeeEnclaveKeySet(context.Background())
 	if got == nil {
 		t.Fatal("a transient attestation failure was cached and bricked later uploads")
@@ -501,7 +479,7 @@ func TestFetchTeeEnclaveKeySetCachesSuccess(t *testing.T) {
 		t.Fatalf("enclave keygen: %v", err)
 	}
 	srv := newTeeServer(t)
-	srv.set(trustedSgx(enclavePub))
+	srv.set(servedScanner(enclavePub))
 
 	first := FetchTeeEnclaveKeySet(context.Background())
 	if first == nil {
@@ -532,7 +510,7 @@ func TestHandleE2EEUploadProducesRecoverableCiphertext(t *testing.T) {
 		t.Fatalf("enclave keygen: %v", err)
 	}
 	srv := newTeeServer(t)
-	srv.set(trustedSgx(enclavePub))
+	srv.set(servedScanner(enclavePub))
 
 	plaintext := randKey(t, 3*1024+7)
 	localPath := filepath.Join(workDir, "payload.bin")
@@ -614,9 +592,6 @@ func TestHandleE2EEUploadRefusesAndCleansUpWhenEnclaveUntrusted(t *testing.T) {
 		mutate func(*api.TeeAttestationResponse)
 	}{
 		{"scanner unavailable", func(r *api.TeeAttestationResponse) { r.Available = false }},
-		{"sgx attestation unverified", func(r *api.TeeAttestationResponse) {
-			r.Attestation.VerificationStatus = "unverified"
-		}},
 		{"enclave key malformed", func(r *api.TeeAttestationResponse) {
 			r.Attestation.EnclavePublicKeyKyber = b64(make([]byte, 8))
 		}},
@@ -638,7 +613,7 @@ func TestHandleE2EEUploadRefusesAndCleansUpWhenEnclaveUntrusted(t *testing.T) {
 			}
 			srv := newTeeServer(t)
 			srv.set(func(r *api.TeeAttestationResponse) {
-				trustedSgx(enclavePub)(r)
+				servedScanner(enclavePub)(r)
 				tc.mutate(r)
 			})
 
@@ -797,7 +772,7 @@ func TestTeeScannerDisabledByServerOnlyOnAnExplicitAnswer(t *testing.T) {
 			defaultSession.teeScannerDisabledByServer = false
 			srv := newTeeServer(t)
 			srv.set(func(r *api.TeeAttestationResponse) {
-				trustedSgx(enclavePub)(r)
+				servedScanner(enclavePub)(r)
 				r.Enabled = true
 				if tc.mutate != nil {
 					tc.mutate(r)

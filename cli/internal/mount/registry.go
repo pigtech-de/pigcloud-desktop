@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"pigcloud/internal/config"
 	"pigcloud/internal/fsutil"
 	"pigcloud/internal/mount/mlog"
 	"sort"
@@ -14,7 +15,7 @@ import (
 const mountsDirName = "mounts.d"
 
 func mountsDir() string {
-	return filepath.Join(ConfigDir(), mountsDirName)
+	return config.PathFor(mountsDirName)
 }
 
 func mountKey(owner, remotePath string) string {
@@ -110,7 +111,7 @@ func IsMountReachable(info *MountInfo) bool {
 }
 
 func MountLogPath(owner, remotePath string) string {
-	return filepath.Join(ConfigDir(), "mount-"+mountKey(owner, remotePath)+".log")
+	return config.PathFor("mount-" + mountKey(owner, remotePath) + ".log")
 }
 
 func RemoveFatalLog(owner, remotePath string) {

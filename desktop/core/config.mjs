@@ -40,6 +40,19 @@ export function normalizeLocal(local, platform = process.platform) {
     return platform === 'win32' ? stripped.toLowerCase() : stripped;
 }
 
+function within(child, parent, separator) {
+    return child === parent || child.startsWith(parent.endsWith(separator) ? parent : parent + separator);
+}
+
+export function pairsOverlap(left, right, platform = process.platform) {
+    const remote = [normalizeRemote(left.remote_path), normalizeRemote(right.remote_path)];
+    if (remote.includes('') || within(remote[0], remote[1], '/') || within(remote[1], remote[0], '/')) return true;
+    const fold = value => platform === 'darwin' ? value.toLowerCase() : value;
+    const local = [fold(normalizeLocal(left.mount_point, platform)), fold(normalizeLocal(right.mount_point, platform))];
+    const separator = platform === 'win32' ? '\\' : '/';
+    return within(local[0], local[1], separator) || within(local[1], local[0], separator);
+}
+
 function validatePair(pair, platform) {
     if (!pair || typeof pair !== 'object' || Array.isArray(pair)) throw new SyncError('invalidArgument');
     const remote = requireString(pair.remote_path, { empty: true });
@@ -171,13 +184,20 @@ export class ConfigStore {
         requireObject(settings, ['revision', 'pairs', 'pollInterval', 'launchOnStartup', 'minimizeToTray', 'allowPrerelease']);
         if (!Array.isArray(settings.pairs)) throw new SyncError('invalidArgument');
         const next = structuredClone(this.current);
-        next.pairs = settings.pairs.map(pair => {
+        const changed = new Set();
+        next.pairs = settings.pairs.map((pair, index) => {
             requireObject(pair, ['id', 'remotePath', 'mountPoint']);
             const old = next.pairs.find(item => normalizeRemote(item.remote_path) === normalizeRemote(requireString(pair.remotePath, { empty: true })));
             const unchanged = old && normalizeLocal(old.mount_point, this.platform) === normalizeLocal(requireString(pair.mountPoint), this.platform);
+            if (!unchanged) changed.add(index);
             return { ...old, remote_path: pair.remotePath, mount_point: pair.mountPoint,
                 ...(!unchanged ? { sync_dir: pair.mountPoint } : {}) };
         });
+        for (const index of changed) {
+            if (next.pairs.some((other, position) => position !== index && pairsOverlap(next.pairs[index], other, this.platform))) {
+                throw new SyncError('overlappingPairs');
+            }
+        }
         next.poll_interval = settings.pollInterval;
         next.launch_on_startup = settings.launchOnStartup;
         next.minimize_to_tray = settings.minimizeToTray;

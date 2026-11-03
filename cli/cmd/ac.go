@@ -108,10 +108,9 @@ func runActivity() {
 	_, payload := cmdutil.ExecuteCommand[api.ActivityPayload](ctx, "ac", options, ExitWithError)
 
 	if acMarkRead == "" {
-		for i := range payload.Events {
-			unwrapEvent(&payload.Events[i])
-		}
+		labelEvents(payload.Events, payload.EventLabels)
 	}
+	payload.EventLabels = nil
 
 	if cmdutil.PrintJSONOrContinue(GetJSONOutput(), payload) {
 		return
@@ -143,11 +142,7 @@ func runActivity() {
 			marker = color.YellowString("* ")
 		}
 
-		typeLabel := formatEventType(event.EventType)
-		detail := formatEventDetail(event.EventType, resolveNodeRefs(event.Detail))
-		timestamp := fsutil.StripControl(output.FormatTime(&event.CreatedAt))
-
-		fmt.Printf("%s%-18s %s  %s\n", marker, typeLabel, color.HiBlackString(timestamp), detail)
+		fmt.Printf("%s%s\n", marker, eventLine(event))
 	}
 
 	if acOffset > 0 {
@@ -177,6 +172,7 @@ func followActivity(ctx context.Context, options map[string]string) {
 						fresh = append(fresh, event)
 					}
 				}
+				labelEvents(fresh, payload.EventLabels)
 				for _, event := range slices.Backward(fresh) {
 					if event.ID > lastID {
 						lastID = event.ID
@@ -207,7 +203,6 @@ func followActivity(ctx context.Context, options map[string]string) {
 }
 
 func printFollowEvent(event api.ActivityEvent) {
-	unwrapEvent(&event)
 	if GetJSONOutput() {
 		line, err := json.Marshal(event)
 		if err == nil {
@@ -215,219 +210,32 @@ func printFollowEvent(event api.ActivityEvent) {
 		}
 		return
 	}
-	typeLabel := formatEventType(event.EventType)
+	fmt.Println(eventLine(event))
+}
+
+func labelEvents(events []api.ActivityEvent, labels map[string]api.ActivityLabel) {
+	for i := range events {
+		unwrapEvent(&events[i])
+		if l, ok := labels[events[i].EventType]; ok {
+			events[i].Label, events[i].Tone = l.Label, l.Tone
+		}
+	}
+}
+
+func eventLine(event api.ActivityEvent) string {
+	label := fsutil.StripControl(event.EventType)
+	if event.Label != "" {
+		label = output.Styled(event.Tone, fsutil.StripControl(event.Label))
+	}
 	detail := formatEventDetail(event.EventType, resolveNodeRefs(event.Detail))
 	timestamp := fsutil.StripControl(output.FormatTime(&event.CreatedAt))
-	fmt.Printf("%-18s %s  %s\n", typeLabel, color.HiBlackString(timestamp), detail)
+	return fmt.Sprintf("%-18s %s  %s", label, color.HiBlackString(timestamp), detail)
 }
 
 func cloneOptions(options map[string]string) map[string]string {
 	c := make(map[string]string, len(options))
 	maps.Copy(c, options)
 	return c
-}
-
-func formatEventType(eventType string) string {
-	switch eventType {
-	case "account_created":
-		return color.GreenString("Account created")
-	case "login":
-		return color.GreenString("Login")
-	case "new_device_login":
-		return color.YellowString("New device login")
-	case "login_attempts_throttled":
-		return color.YellowString("Login attempts throttled")
-	case "password_change":
-		return color.YellowString("Password changed")
-	case "email_change":
-		return color.YellowString("Email changed")
-	case "two_factor_change":
-		return color.YellowString("2FA changed")
-	case "passkey_registered":
-		return color.CyanString("Passkey registered")
-	case "passkey_removed":
-		return color.YellowString("Passkey removed")
-	case "session_revoked":
-		return color.YellowString("Session revoked")
-	case "api_key_created":
-		return color.CyanString("API key created")
-	case "api_key_revoked":
-		return color.YellowString("API key revoked")
-	case "e2ee_key_rotation":
-		return color.CyanString("E2EE keys rotated")
-	case "fido2_tfa_change":
-		return color.YellowString("FIDO2 2FA changed")
-	case "recovery_codes_generated":
-		return color.YellowString("Recovery codes generated")
-	case "oauth_linked":
-		return color.YellowString("External account linked")
-	case "oauth_unlinked":
-		return color.YellowString("External account unlinked")
-	case "activity_cleared":
-		return color.YellowString("Activity log cleared")
-	case "file_uploaded":
-		return "File uploaded"
-	case "file_downloaded":
-		return "File downloaded"
-	case "file_deleted":
-		return "File deleted"
-	case "file_moved":
-		return "File moved"
-	case "file_renamed":
-		return "File renamed"
-	case "file_copied":
-		return "File copied"
-	case "file_restored":
-		return "File restored"
-	case "file_sanitized":
-		return "File sanitized"
-	case "folder_created":
-		return "Folder created"
-	case "trash_emptied":
-		return "Trash emptied"
-	case "versions_purged":
-		return "Versions purged"
-	case "recents_cleared":
-		return "Recents cleared"
-	case "share_sent":
-		return color.CyanString("Share sent")
-	case "share_received":
-		return color.CyanString("Share received")
-	case "share_expired":
-		return color.HiBlackString("Share expired")
-	case "share_rejected":
-		return color.RedString("Share rejected")
-	case "share_removed":
-		return color.YellowString("Share removed")
-	case "share_item_taken":
-		return color.YellowString("Item moved out of your share")
-	case "share_item_versions_dropped":
-		return color.YellowString("Version history dropped")
-	case "version_restored":
-		return color.CyanString("Version restored")
-	case "version_deleted":
-		return color.YellowString("Version deleted")
-	case "public_link_created":
-		return color.CyanString("Link created")
-	case "public_link_deleted":
-		return color.YellowString("Link deleted")
-	case "public_link_expired":
-		return color.HiBlackString("Link expired")
-	case "public_link_limit_reached":
-		return color.YellowString("Link limit reached")
-	case "space_invite_received":
-		return color.CyanString("Space invite received")
-	case "space_invite_accepted":
-		return color.GreenString("Space invite accepted")
-	case "space_invite_declined":
-		return color.HiBlackString("Space invite declined")
-	case "space_member_left":
-		return color.YellowString("Member left a space")
-	case "space_member_joined":
-		return color.GreenString("Member joined a space")
-	case "space_member_removed":
-		return color.YellowString("Member removed from a space")
-	case "space_role_changed":
-		return color.CyanString("Space role changed")
-	case "space_archived":
-		return color.YellowString("Space archived")
-	case "space_unarchived":
-		return color.GreenString("Space reopened")
-	case "space_deleted":
-		return color.RedString("Space deleted")
-	case "storage_warning":
-		return color.YellowString("Storage warning")
-	case "storage_full":
-		return color.RedString("Storage full")
-	case "storage_readonly":
-		return color.RedString("Storage read-only")
-	case "storage_purge_notice":
-		return color.RedString("Final storage notice")
-	case "account_dormant_warning":
-		return color.YellowString("Inactive account notice")
-	case "space_stake_retained":
-		return color.YellowString("Space stake held after leaving")
-	case "space_stake_released":
-		return color.GreenString("Space stake released")
-	case "space_stake_partly_released":
-		return color.GreenString("Space stake partly released")
-	case "subscription_created":
-		return color.GreenString("Subscription created")
-	case "subscription_renewed":
-		return color.GreenString("Subscription renewed")
-	case "subscription_upgraded":
-		return color.CyanString("Plan upgraded")
-	case "subscription_downgraded":
-		return color.YellowString("Plan downgraded")
-	case "subscription_cancelled":
-		return color.YellowString("Auto-renewal disabled")
-	case "subscription_reactivated":
-		return color.GreenString("Auto-renewal enabled")
-	case "subscription_expired":
-		return color.RedString("Subscription expired")
-	case "payment_failed":
-		return color.RedString("Payment failed")
-	case "payment_retry_failed":
-		return color.RedString("Payment retry failed")
-	case "payment_final_failed":
-		return color.RedString("Final payment attempt failed")
-	case "payment_card_expiring":
-		return color.YellowString("Card expires before renewal")
-	case "subscription_term_ending":
-		return color.YellowString("Prepaid year ending")
-	case "payment_action_required":
-		return color.YellowString("Payment action required")
-	case "subscription_disputed":
-		return color.RedString("Payment disputed")
-	case "expansion_pack_added":
-		return color.CyanString("Storage expanded")
-	case "expansion_pack_removed":
-		return color.YellowString("Storage expansion removed")
-	case "contract_withdrawal_received":
-		return color.YellowString("Contract withdrawal received")
-	case "contract_withdrawal_refunded":
-		return color.GreenString("Contract withdrawal completed")
-	case "contract_cancellation_received":
-		return color.YellowString("Contract cancellation received")
-	case "friend_request_received":
-		return color.CyanString("Friend request received")
-	case "friend_request_accepted":
-		return color.GreenString("Friend request accepted")
-	case "friend_request_declined":
-		return color.HiBlackString("Friend request declined")
-	case "friend_removed_by_peer":
-		return color.YellowString("Friend removed you")
-	case "chat_message_received":
-		return color.CyanString("New chat message")
-	case "chat_message_reaction":
-		return color.CyanString("New reaction")
-	case "chat_message_edited":
-		return color.HiBlackString("Message edited")
-	case "chat_message_deleted":
-		return color.HiBlackString("Message deleted")
-	case "chat_group_message_received":
-		return color.CyanString("New group message")
-	case "chat_group_added":
-		return color.CyanString("Added to a group")
-	case "chat_group_removed":
-		return color.YellowString("Removed from a group")
-	case "chat_group_owner_promoted":
-		return color.CyanString("Promoted to group owner")
-	case "chat_group_message_reaction":
-		return color.CyanString("New group reaction")
-	case "cli_update":
-		return color.CyanString("CLI update available")
-	case "desktop_update":
-		return color.CyanString("Desktop update available")
-	case "platform_update":
-		return color.CyanString("Platform update")
-	case "admin_report_received":
-		return color.YellowString("Abuse report received")
-	case "legal_update":
-		return color.CyanString("Legal document updated")
-	default:
-		return fsutil.StripControl(eventType)
-	}
 }
 
 func decryptEventDetail(detail string) string {

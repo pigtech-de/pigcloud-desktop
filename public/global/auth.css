@@ -184,9 +184,6 @@
 .auth-alt-row .btn {
     flex: 1;
     min-width: 0;
-    padding-inline: var(--space-10);
-    font-size: var(--font-size-sm);
-    gap: var(--space-8);
 }
 
 .oauth-icon {

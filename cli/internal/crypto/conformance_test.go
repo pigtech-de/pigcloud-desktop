@@ -114,9 +114,9 @@ func TestConformance_ChatMessageV1(t *testing.T) {
 	ciphertext := decodeB64(t, "ciphertext", v.CiphertextB64)
 	wantPlaintext := decodeB64(t, "plaintext", v.PlaintextB64)
 
-	gotPlaintext, err := DecryptMessage(ciphertext, nonce, dataKey)
+	gotPlaintext, err := DecryptWithKey(ciphertext, nonce, dataKey)
 	if err != nil {
-		t.Fatalf("DecryptMessage failed — chat body cipher diverges from fixture: %v", err)
+		t.Fatalf("DecryptWithKey failed — chat body cipher diverges from fixture: %v", err)
 	}
 	if !bytes.Equal(gotPlaintext, wantPlaintext) {
 		t.Fatalf("plaintext mismatch — decrypts but produces different bytes\n  got:  %x\n  want: %x", gotPlaintext, wantPlaintext)

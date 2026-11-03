@@ -24,7 +24,7 @@ func TransferBackoff(attempts int) time.Duration {
 	return d
 }
 
-func (d *DB) RecordTransferFailure(tag, path string, inodeID int64, kind string, err error) {
+func (d *DB) RecordTransferFailure(tag string, inodeID int64, kind string, err error) {
 	if inodeID == 0 || errors.Is(err, context.Canceled) {
 		return
 	}
@@ -35,11 +35,11 @@ func (d *DB) RecordTransferFailure(tag, path string, inodeID int64, kind string,
 	f := &SyncFailure{InodeID: inodeID, Kind: kind, Permanent: IsPermanent(err), Attempts: attempts, LastError: err.Error()}
 	if f.Permanent {
 		d.SetSyncStatus(inodeID, StatusFailed, err.Error())
-		mlog.Errorf("%s: %s will not be retried: %v", tag, path, err)
+		mlog.Errorf("%s: inode %d will not be retried (%s)", tag, inodeID, mlog.Cause(err))
 	} else {
 		wait := TransferBackoff(attempts)
 		f.NextRetryAt = time.Now().Add(wait).Unix()
-		mlog.Warnf("%s: %s: %v (attempt %d, next in %v)", tag, path, err, attempts, wait)
+		mlog.Warnf("%s: inode %d failed (%s, attempt %d, next in %v)", tag, inodeID, mlog.Cause(err), attempts, wait)
 	}
 	d.RecordSyncFailure(f)
 }

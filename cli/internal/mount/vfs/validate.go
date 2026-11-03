@@ -13,7 +13,7 @@ const (
 	MaxUploadSize = 5 * 1024 * 1024 * 1024
 )
 
-var validNameRegex = regexp.MustCompile(`^[a-zA-Z0-9_ äöüÄÖÜß.-]+$`)
+var validNameRegex = regexp.MustCompile(`^[\p{L}\p{M}0-9_ &!\p{So}\x{200D}\x{FE0F}\x{1F3FB}-\x{1F3FF}.-]+$`)
 
 var ExcludedDirs = map[string]bool{
 	".Trash":        true,
@@ -45,7 +45,7 @@ func ValidateFile(name string, size int64) (bool, string) {
 	return true, ""
 }
 
-var validFolderRegex = regexp.MustCompile(`^[a-zA-Z0-9_ äöüÄÖÜß-]+$`)
+var validFolderRegex = regexp.MustCompile(`^[\p{L}\p{M}0-9_ &!\p{So}\x{200D}\x{FE0F}\x{1F3FB}-\x{1F3FF}-]+$`)
 
 func ValidateDirName(name string) (bool, string) {
 	if !validFolderRegex.MatchString(name) {

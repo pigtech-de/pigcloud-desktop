@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"pigcloud/internal/config"
 	"pigcloud/internal/crypto"
 	"pigcloud/internal/mount"
 	"pigcloud/internal/mount/mlog"
@@ -41,7 +42,7 @@ func isolateConfigDir(t *testing.T) {
 	t.Setenv("APPDATA", dir)
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir)
-	if got := mount.ConfigDir(); !strings.HasPrefix(got, dir) {
+	if got := config.DefaultDir(); !strings.HasPrefix(got, dir) {
 		t.Fatalf("config dir %q escaped the temp dir %q", got, dir)
 	}
 }
@@ -63,7 +64,7 @@ func TestSpawnedDaemonFatalLandsInTheNonRotatingSink(t *testing.T) {
 		t.Skip("detached spawn does not inherit the parent's handles the same way")
 	}
 	isolateConfigDir(t)
-	if err := os.MkdirAll(mount.ConfigDir(), 0700); err != nil {
+	if err := os.MkdirAll(config.DefaultDir(), 0700); err != nil {
 		t.Fatalf("create config dir: %v", err)
 	}
 	t.Setenv(fatalHelperEnv, "1")
@@ -127,7 +128,7 @@ func TestSpawnedDaemonFatalLogCarriesNoKeyMaterial(t *testing.T) {
 		t.Skip("detached spawn does not inherit the parent's handles the same way")
 	}
 	isolateConfigDir(t)
-	if err := os.MkdirAll(mount.ConfigDir(), 0700); err != nil {
+	if err := os.MkdirAll(config.DefaultDir(), 0700); err != nil {
 		t.Fatalf("create config dir: %v", err)
 	}
 	t.Setenv(fatalHelperEnv, "keys")

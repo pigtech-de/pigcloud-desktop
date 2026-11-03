@@ -24,7 +24,7 @@ import (
 
 func isMutatingIPC(action string) bool {
 	switch action {
-	case "pin", "unpin", "flush", "clean", "resolve", "retry":
+	case "pin", "unpin", "flush", "clean", "resolve", "retry", "release":
 		return true
 	}
 	return false
@@ -133,7 +133,7 @@ func ServeVirtual(cfg *Config) error {
 		mlog.SetOutput(lf)
 		defer lf.Close()
 	}
-	mlog.Infof("mount daemon starting: remote=%s mountpoint=%s level=%s", cfg.RemotePath, cfg.MountPoint, mlog.CurrentLevel())
+	mlog.Infof("mount daemon starting: level=%s", mlog.CurrentLevel())
 
 	defer mlog.RecoverPanic("mount daemon")
 
@@ -204,12 +204,12 @@ func ServeVirtual(cfg *Config) error {
 		d.shutdown()
 	}()
 
-	mlog.Infof("mount daemon ready: pid=%d port=%d mountpoint=%s", os.Getpid(), port, cfg.MountPoint)
+	mlog.Infof("mount daemon ready: pid=%d port=%d", os.Getpid(), port)
 
 	mountErr := backend.Mount(cfg.MountPoint, rt.vfs)
 
 	if mountErr != nil {
-		mlog.Errorf("mount returned error: %v", mountErr)
+		mlog.Errorf("mount returned error (%s)", mlog.Cause(mountErr))
 	} else {
 		mlog.Infof("mount returned (unmounted)")
 	}
@@ -257,34 +257,13 @@ func (d *Daemon) retryFailed(remotePath string) (int, error) {
 }
 
 func (d *Daemon) handleStatus(enc *json.Encoder) {
-	cacheUsed := cache.CacheBytes(d.cacheDB, d.store)
-	pending, _ := d.cacheDB.PendingWritebackCount()
-	failed, _ := d.cacheDB.FailedWritebackCount()
-	deferred, nextDue := deferredQueue(d.cacheDB)
-
-	lastPoll := d.poller.LastPoll()
-	lastPollStr := ""
-	if !lastPoll.IsZero() {
-		lastPollStr = fmt.Sprintf("%ds ago", int(time.Since(lastPoll).Seconds()))
-	}
-
-	uptime := time.Since(d.startedAt).Round(time.Second).String()
-
-	enc.Encode(mount.DaemonResponse{
-		OK:             true,
-		Online:         d.poller.IsOnline(),
-		MountPoint:     d.mountPoint,
-		RemotePath:     "/" + mount.NormalizeRemotePath(d.remotePath),
-		Mode:           mount.ModeVirtual,
-		CacheUsed:      cacheUsed,
-		CacheMax:       d.cacheMax,
-		PendingCount:   pending,
-		FailedCount:    failed,
-		DeferredCount:  deferred,
-		NextDueSeconds: nextDue,
-		LastPoll:       lastPollStr,
-		Uptime:         uptime,
-	})
+	resp := statusBase(d.cacheDB, d.store, d.poller, d.startedAt)
+	resp.MountPoint = d.mountPoint
+	resp.RemotePath = "/" + mount.NormalizeRemotePath(d.remotePath)
+	resp.Mode = mount.ModeVirtual
+	resp.CacheMax = d.cacheMax
+	resp.FailedDownloadCount, _ = d.cacheDB.FailedDownloadCount()
+	enc.Encode(resp)
 }
 
 func (d *Daemon) shutdown() {

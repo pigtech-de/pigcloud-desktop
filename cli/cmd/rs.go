@@ -3,9 +3,11 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -13,6 +15,7 @@ import (
 	"pigcloud/internal/cmdutil"
 	"pigcloud/internal/e2ee"
 	"pigcloud/internal/output"
+	"pigcloud/internal/tree"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -30,16 +33,89 @@ const (
 	restoreProceed
 )
 
-func restoreOptions(nodeID string, toRoot bool, parentKey []byte) map[string]string {
-	options := map[string]string{"node_id": nodeID}
-	if !toRoot {
-		return options
+const rootParentID = "00000000000000000000000000000000"
+
+var errRestoreParentUnknown = errors.New("the folder this item came from is unknown; pass --to-root to restore it at the account root")
+
+type restoreTarget struct {
+	parentID string
+	toRoot   bool
+}
+
+func restoreTargetFor(built *tree.Tree, nodeID string) (restoreTarget, error) {
+	id := strings.ToLower(nodeID)
+	node, ok := built.Get(id)
+	if !ok {
+		return restoreTarget{}, fmt.Errorf("item %s is not in this device's folder tree", nodeID)
 	}
-	options["to_root"] = "1"
-	if sealed := e2ee.SealedRootParentB64(nodeID, parentKey); sealed != "" {
-		options["e2ee_sealed_parent"] = sealed
+	if slices.Contains(built.Orphans, id) {
+		return restoreTarget{}, errRestoreParentUnknown
+	}
+	if node.ParentID == "" {
+		return restoreTarget{parentID: rootParentID}, nil
+	}
+	return restoreTarget{parentID: node.ParentID}, nil
+}
+
+func restoreOptions(nodeID string, target restoreTarget, parentKey []byte) (map[string]string, error) {
+	options := map[string]string{"node_id": nodeID}
+	if target.toRoot {
+		options["to_root"] = "1"
+	}
+	if parentKey == nil {
+		return options, nil
+	}
+	sealTo := ""
+	if !target.toRoot {
+		if target.parentID == "" {
+			return nil, errors.New("restore names no parent folder")
+		}
+		options["restore_parent_id"] = target.parentID
+		if target.parentID != rootParentID {
+			sealTo = target.parentID
+		}
+	}
+	sealed, err := e2ee.SealParentRefB64(nodeID, sealTo, parentKey)
+	if err != nil {
+		return nil, err
+	}
+	options["e2ee_sealed_parent"] = sealed
+	return options, nil
+}
+
+func restoreRequest(ctx context.Context, nodeID string, toRoot bool, parentKey []byte) map[string]string {
+	target := restoreTarget{toRoot: toRoot}
+	if parentKey != nil && !toRoot {
+		built := loadClientTree(ctx)
+		if built == nil {
+			refuseWrite(errors.New("could not build the folder tree to find where the item came from"))
+			return nil
+		}
+		var err error
+		target, err = restoreTargetFor(built, nodeID)
+		if errors.Is(err, errRestoreParentUnknown) && restoreInteractive() {
+			if !cmdutil.ConfirmAction("The folder this item came from is unknown. Restore it to the account root instead?", false) {
+				output.PrintInfo("Cancelled")
+				ExitWithError()
+				return nil
+			}
+			target, err = restoreTarget{toRoot: true}, nil
+		}
+		if err != nil {
+			refuseWrite(err)
+			return nil
+		}
+	}
+	options, err := restoreOptions(nodeID, target, parentKey)
+	if err != nil {
+		refuseWrite(err)
+		return nil
 	}
 	return options
+}
+
+func restoreInteractive() bool {
+	return term.IsTerminal(int(syscall.Stdin)) && !GetJSONOutput() && !GetQuietOutput()
 }
 
 func decideRootRestore(errorCode string, toRoot, interactive bool) rootRestoreDecision {
@@ -88,11 +164,8 @@ func runRestore(arg string) {
 		}
 	}
 
-	var rootParentKey []byte
-	if rsToRoot {
-		rootParentKey = cmdutil.GetParentKey(ExitWithError)
-	}
-	options := restoreOptions(nodeID, rsToRoot, rootParentKey)
+	parentKey := writerParentKey()
+	options := restoreRequest(ctx, nodeID, rsToRoot, parentKey)
 
 	client := api.NewClient()
 	resp, err := client.Execute(ctx, "rs", options)
@@ -103,7 +176,7 @@ func runRestore(arg string) {
 	}
 
 	if !resp.Success {
-		interactive := term.IsTerminal(int(syscall.Stdin)) && !GetJSONOutput() && !GetQuietOutput()
+		interactive := restoreInteractive()
 		switch decideRootRestore(resp.ErrorCode, rsToRoot, interactive) {
 		case restoreAsk:
 			output.PrintWarning(resp.Message)
@@ -111,7 +184,7 @@ func runRestore(arg string) {
 				output.PrintInfo("Cancelled")
 				return
 			}
-			options = restoreOptions(nodeID, true, cmdutil.GetParentKey(ExitWithError))
+			options = restoreRequest(ctx, nodeID, true, parentKey)
 			resp, err = client.Execute(ctx, "rs", options)
 			if err != nil {
 				output.PrintError("Request failed: " + err.Error())
@@ -172,7 +245,7 @@ func resolveTrashPath(ctx context.Context, input string) string {
 		if name == target {
 			matches = append(matches, candidate{
 				name: name, nodeID: item.NodeID,
-				itemType: item.Type, deletedAt: item.DeletedAt,
+				itemType: item.Type, deletedAt: output.FormatTime(&item.DeletedAt),
 			})
 		}
 	}

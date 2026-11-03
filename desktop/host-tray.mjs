@@ -14,9 +14,12 @@ export function traySummary(snapshot, t) {
         pending += Number(pair.status?.pendingCount) || 0;
         failed += (Number(pair.status?.failedCount) || 0) + (Number(pair.status?.failedDownloadCount) || 0);
     }
-    const key = {noCli: 'syncMissingCli', notConfigured: 'syncLoginRequired', failed: 'syncError'}[snapshot.state]
-        || `sync${snapshot.state?.[0]?.toUpperCase() || ''}${snapshot.state?.slice(1) || ''}`;
-    return t('desktopNativeSummary', {state: t(key), pending, failed});
+    return t('desktopNativeSummary', {state: t(stateKey(snapshot.state)), pending, failed});
+}
+
+function stateKey(state) {
+    return {noCli: 'syncMissingCli', notConfigured: 'syncLoginRequired', failed: 'syncError'}[state]
+        || `sync${state?.[0]?.toUpperCase() || ''}${state?.slice(1) || ''}`;
 }
 
 export function trayMenu(snapshot, t, actions) {
@@ -34,9 +37,12 @@ export function trayMenu(snapshot, t, actions) {
             return code >= 0x20 && !(code >= 0x7f && code <= 0x9f)
                 && !(code >= 0x202a && code <= 0x202e) && !(code >= 0x2066 && code <= 0x2069);
         }).join('').replaceAll('&', '&&');
+        const active = pair.state === 'running' || pair.state === 'starting';
         items.push({label: name, submenu: [
-            {label: t('desktopNativeStart'), enabled: pair.state !== 'running' && pair.state !== 'starting', click: () => actions.start(pair.id)},
-            {label: t('desktopNativeStop'), click: () => actions.stop(pair.id)},
+            {label: t(stateKey(pair.state)), enabled: false},
+            {type: 'separator'},
+            {label: t('desktopNativeStart'), enabled: !active, click: () => actions.start(pair.id)},
+            {label: t('desktopNativeStop'), enabled: active, click: () => actions.stop(pair.id)},
             {label: t('desktopNativeOpenFolder'), click: () => actions.folder(pair.id)},
         ]});
     }

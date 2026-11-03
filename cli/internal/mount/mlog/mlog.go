@@ -1,12 +1,17 @@
 package mlog
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"os"
 	"runtime"
 	"strings"
 	"sync/atomic"
+	"syscall"
 )
 
 type Level int32
@@ -79,6 +84,40 @@ func Infof(format string, args ...any) { emit(LevelInfo, format, args...) }
 func Warnf(format string, args ...any) { emit(LevelWarn, format, args...) }
 
 func Errorf(format string, args ...any) { emit(LevelError, format, args...) }
+
+func Cause(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, os.ErrNotExist):
+		return "not_found"
+	case errors.Is(err, os.ErrPermission):
+		return "permission"
+	case errors.Is(err, os.ErrExist):
+		return "exists"
+	case errors.Is(err, syscall.ENOSPC):
+		return "disk_full"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		if netErr.Timeout() {
+			return "timeout"
+		}
+		return "network"
+	}
+	kind := "error"
+	for e := err; e != nil; e = errors.Unwrap(e) {
+		if t := fmt.Sprintf("%T", e); !strings.HasPrefix(t, "*fmt.") && !strings.HasPrefix(t, "*errors.") {
+			kind = t
+			break
+		}
+	}
+	return kind
+}
 
 const panicStackBytes = 32 << 10
 

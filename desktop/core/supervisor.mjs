@@ -10,10 +10,13 @@ const STATE_RANK = ['stopped', 'running', 'starting', 'locked', 'mismatch', 'sta
 const COUNT_FIELDS = {
     pendingCount: 'pending_count', failedCount: 'failed_count', failedDownloadCount: 'failed_download_count',
     deferredCount: 'deferred_count', nextDueSeconds: 'next_due_seconds', cacheUsed: 'cache_used', cacheMax: 'cache_max',
+    massDeleteHeld: 'mass_delete_held',
 };
 
 function projectStatus(raw) {
-    const status = { online: raw.online === true, lastPoll: raw.last_poll || '', uptime: raw.uptime || '' };
+    const status = { online: raw.online === true, lastPoll: raw.last_poll || '', uptime: raw.uptime || '',
+        watcherDegraded: raw.watcher_degraded === true,
+        watcherError: ['watch_limit', 'watch_failed'].includes(raw.watcher_error) ? raw.watcher_error : '' };
     for (const [field, wire] of Object.entries(COUNT_FIELDS)) status[field] = Math.max(0, raw[wire] || 0);
     return status;
 }
@@ -154,6 +157,7 @@ export class SyncSupervisor {
             this.publish();
             return;
         }
+        if (this.notice?.code === 'unavailable') this.notice = null;
         for (const pair of this.pairs) {
             pair.status = null;
             if (this.unsupportedEndpoint) pair.state = 'unsupportedEndpoint';
@@ -173,6 +177,7 @@ export class SyncSupervisor {
                         }
                         pair.status = projectStatus(raw);
                         pair.state = 'running';
+                        pair.error = null;
                     } catch (error) {
                         pair.state = error.code === 'identityMismatch' ? 'mismatch' : 'stale';
                     }
@@ -414,10 +419,13 @@ export class SyncSupervisor {
 
     mutateDaemon(action, args) {
         return this.enqueue(async () => {
-            requireObject(args, action === 'resolve' ? ['pairId', 'path', 'choice'] : action === 'retry' ? ['pairId', 'path'] : ['pairId']);
+            requireObject(args, action === 'resolve' ? ['pairId', 'path', 'choice'] : action === 'retry' ? ['pairId', 'path']
+                : action === 'release' ? ['pairId', 'choice'] : ['pairId']);
             if (action === 'resolve') {
                 requireString(args.path);
                 if (!['local', 'remote', 'both'].includes(args.choice)) throw new SyncError('invalidArgument');
+            } else if (action === 'release') {
+                if (!['delete', 'restore'].includes(args.choice)) throw new SyncError('invalidArgument');
             } else if (args.path !== undefined) requireString(args.path, { empty: true });
             await this.discover();
             const pair = this.pair({ pairId: args.pairId });
@@ -429,6 +437,7 @@ export class SyncSupervisor {
                 if (!conflicts.files?.some(item => item.path === args.path && item.status === 'conflict')) throw new SyncError('stalePair');
                 fields.choice = args.choice;
             }
+            if (action === 'release') fields.choice = args.choice;
             const response = await this.request(entry, action, fields);
             return { ok: true, pairId: pair.id, retried: response.retried || 0,
                 deferredCount: response.deferred_count || 0, nextDueSeconds: response.next_due_seconds || 0 };
@@ -438,8 +447,9 @@ export class SyncSupervisor {
     resolve(args) { return this.mutateDaemon('resolve', args); }
     retry(args) { return this.mutateDaemon('retry', args); }
     flush(args) { return this.mutateDaemon('flush', args); }
+    release(args) { return this.mutateDaemon('release', args); }
 
-    loginCli({ openVerification, signal } = {}) {
+    loginCli({ openVerification, signal, replace = false } = {}) {
         if (this.loginPromise) return this.loginPromise;
         if (typeof openVerification !== 'function') return Promise.reject(new SyncError('invalidArgument'));
         const controller = new AbortController();
@@ -454,6 +464,7 @@ export class SyncSupervisor {
                 if (!this.runner) throw new SyncError('noCli');
                 return this.runner;
             });
+            if (replace === true) await runner.logout({ signal: controller.signal });
             await runner.loginDevice({ openVerification, signal: controller.signal });
             return this.enqueue(async () => {
                 await this.refresh();

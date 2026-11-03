@@ -74,7 +74,6 @@ func TeeSigningKeyFingerprint(edB64, mlB64 string) string {
 
 type teeAttestationPosture struct {
 	Mode           string `json:"mode"`
-	Mrenclave      string `json:"mrenclave,omitempty"`
 	SealingPk      string `json:"sealing_pk,omitempty"`
 	SealingPkKyber string `json:"sealing_pk_kyber,omitempty"`
 }
@@ -185,8 +184,8 @@ func (o *TeeAttestationOffer) PostureLabel() string { return o.posture.label() }
 func (p teeAttestationPosture) label() string {
 	keys := shortSealingFingerprint(p.SealingPk, p.SealingPkKyber)
 	switch {
-	case p.Mode == "epid" && p.Mrenclave != "":
-		return "SGX measurement " + p.Mrenclave + ", sealing key " + keys
+	case p.Mode == "epid":
+		return "retired attestation mode epid, sealing key " + keys
 	case p.SealingPk != "":
 		return "unattested sealing key " + keys
 	default:
@@ -384,11 +383,7 @@ func recordTeeAttestationPosture(p teeAttestationPosture) {
 }
 
 type servedAttestation struct {
-	Mode, Mrenclave, Quote, Status, SealingPk, SealingPkKyber string
-}
-
-func (a servedAttestation) sgx() bool {
-	return a.Mode == "epid" && a.Mrenclave != "" && a.Quote != ""
+	SealingPk, SealingPkKyber string
 }
 
 func teeRepinSidecarNote(path string) string {
@@ -397,12 +392,6 @@ func teeRepinSidecarNote(path string) string {
 
 func checkTeeAttestationPosture(att servedAttestation) (func(), error) {
 	path := teeSigningPins.path()
-	if att.Status == "untrusted" {
-		return nil, errors.New("tee_attestation_untrusted: the server reports its own enclave attestation as untrusted")
-	}
-	if att.sgx() && att.Status != "trusted" {
-		return nil, errors.New("tee_attestation_unverified: the server reports SGX mode without a verified quote")
-	}
 	offered, err := postureFor(att)
 	if err != nil {
 		return nil, err
@@ -415,12 +404,8 @@ func checkTeeAttestationPosture(att servedAttestation) (func(), error) {
 	switch {
 	case pinned == nil:
 		return commit, nil
-	case pinned.Mode == "epid" && offered.Mode != "epid":
-		return nil, fmt.Errorf("tee_attestation_downgraded: this account last saw an SGX enclave and the server now offers an unattested key. If the deployment deliberately left SGX, `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
-	case pinned.Mode != offered.Mode:
-		return nil, fmt.Errorf("tee_attestation_mode_changed: the server now claims an SGX enclave where this account pinned an unattested key, and this client cannot verify that claim. If the deployment deliberately moved to SGX, `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
-	case offered.Mode == "epid" && offered.Mrenclave != pinned.Mrenclave:
-		return nil, fmt.Errorf("tee_mrenclave_changed: the enclave measurement differs from the one pinned for this account. If the scanner was deliberately rebuilt, `pc te repin` shows both measurements and moves the pin; %s", teeRepinSidecarNote(path))
+	case pinned.Mode == "epid":
+		return nil, fmt.Errorf("tee_attestation_downgraded: this account pinned the scanner under the retired attestation mode epid, and the server now offers an unattested key. `pc te repin` shows both postures and moves the pin; %s", teeRepinSidecarNote(path))
 	case offered.SealingPk != pinned.SealingPk:
 		return nil, errTeeEnclavePkChanged()
 	case pinned.SealingPkKyber == "":
@@ -438,7 +423,7 @@ func checkTeeAttestationPosture(att servedAttestation) (func(), error) {
 var teeNotice = output.PrintWarning
 
 func errTeeEnclavePkChanged() error {
-	return fmt.Errorf("tee_enclave_pk_changed: the enclave sealing key differs from the one pinned for this account. If the scanner was deliberately rekeyed, `pc te repin` shows both keys and moves the pin; %s", teeRepinSidecarNote(teeSigningPins.path()))
+	return fmt.Errorf("tee_enclave_pk_changed: the scanner sealing key differs from the one pinned for this account. If the scanner was deliberately rekeyed, `pc te repin` shows both keys and moves the pin; %s", teeRepinSidecarNote(teeSigningPins.path()))
 }
 
 func teeKeySetMatchesPin(set *crypto.PublicKeySet) bool {
@@ -500,14 +485,8 @@ func teeAttestationAnswerable(resp *api.TeeAttestationResponse) error {
 		return errors.New("tee_attestation_unavailable: the server reports the scanner as unavailable")
 	}
 	att := resp.Attestation
-	if att.VerificationStatus == "untrusted" {
-		return errors.New("tee_attestation_untrusted: the server reports its own enclave attestation as untrusted")
-	}
-	if att.AttestationMode == "epid" && att.Mrenclave != "" && att.SgxQuote != "" && att.VerificationStatus != "trusted" {
-		return errors.New("tee_attestation_unverified: the server reports SGX mode without a verified quote")
-	}
 	if att.EnclaveSigningPkEd25519 == "" || att.EnclaveSigningPkMldsa == "" {
-		return errors.New("tee_signing_pk_absent: the attestation carries no enclave signing key set")
+		return errors.New("tee_signing_pk_absent: the attestation carries no scanner signing key set")
 	}
 	return nil
 }
@@ -526,12 +505,7 @@ func OfferedTeeSigningPk() (*TeeAttestationOffer, error) {
 	if err := validateTeeSigningPair(att.EnclaveSigningPkEd25519, att.EnclaveSigningPkMldsa); err != nil {
 		return nil, err
 	}
-	served := servedAttestation{
-		Mode: att.AttestationMode, Mrenclave: att.Mrenclave, Quote: att.SgxQuote,
-		Status: att.VerificationStatus, SealingPk: att.EnclavePublicKey,
-		SealingPkKyber: att.EnclavePublicKeyKyber,
-	}
-	posture, err := postureFor(served)
+	posture, err := postureFor(servedAttestation{SealingPk: att.EnclavePublicKey, SealingPkKyber: att.EnclavePublicKeyKyber})
 	if err != nil {
 		return nil, err
 	}
@@ -551,11 +525,7 @@ func postureFor(att servedAttestation) (teeAttestationPosture, error) {
 	if err != nil || len(kyber) != crypto.KyberPublicKeySize {
 		return teeAttestationPosture{}, errors.New("tee_enclave_key_malformed: the server answered with an ML-KEM sealing key of the wrong size")
 	}
-	p := teeAttestationPosture{Mode: "none", SealingPk: att.SealingPk, SealingPkKyber: att.SealingPkKyber}
-	if att.sgx() {
-		p.Mode, p.Mrenclave = "epid", att.Mrenclave
-	}
-	return p, nil
+	return teeAttestationPosture{Mode: "none", SealingPk: att.SealingPk, SealingPkKyber: att.SealingPkKyber}, nil
 }
 
 func checkTeeSigningPks(edB64, mlB64 string) (func(), error) {
@@ -567,14 +537,14 @@ func checkTeeSigningPks(edB64, mlB64 string) (func(), error) {
 		if rec.accepts(edB64, mlB64) {
 			return func() {}, nil
 		}
-		return nil, fmt.Errorf("tee_signing_pk_changed: the enclave signing key differs from the one pinned for this account. If the enclave was deliberately rekeyed, `pc te repin` shows both fingerprints and moves the pin, keeping the files the old key signed readable; deleting %s instead accepts the next key it is offered, which is also what an attacker needs, and refuses every file the old key signed", teeSigningPins.path())
+		return nil, fmt.Errorf("tee_signing_pk_changed: the scanner signing key differs from the one pinned for this account. If the scanner was deliberately rekeyed, `pc te repin` shows both fingerprints and moves the pin, keeping the files the old key signed readable; deleting %s instead accepts the next key it is offered, which is also what an attacker needs, and refuses every file the old key signed", teeSigningPins.path())
 	}
 	att := attestedTeeSigningPk()
 	if att == nil {
 		return nil, ErrTeeAttestationUnavailable
 	}
 	if att.Ed != edB64 || att.Ml != mlB64 {
-		return nil, errors.New("tee_signing_pk_untrusted: the served enclave signing key is not the attested one")
+		return nil, errors.New("tee_signing_pk_untrusted: the served scanner signing key is not the one the attestation reports")
 	}
 	return func() { recordTeeSigningPk(edB64, mlB64) }, nil
 }

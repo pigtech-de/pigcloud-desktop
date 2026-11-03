@@ -1,12 +1,52 @@
 package vfs
 
 import (
+	"encoding/json"
+	"os"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
 
 	"pigcloud/internal/filetypes"
 )
+
+func TestNameRuleMatchesSharedVectors(t *testing.T) {
+	raw, err := os.ReadFile("../../../../tests/vectors/name_rule_v1.json")
+	if err != nil {
+		t.Fatalf("read shared name vectors: %v", err)
+	}
+	type nameSet struct {
+		Accept []string `json:"accept"`
+		Reject []string `json:"reject"`
+	}
+	var vectors struct {
+		Folder nameSet `json:"folder"`
+		File   nameSet `json:"file"`
+	}
+	if err := json.Unmarshal(raw, &vectors); err != nil {
+		t.Fatalf("parse shared name vectors: %v", err)
+	}
+	for kind, re := range map[string]*regexp.Regexp{"folder": validFolderRegex, "file": validNameRegex} {
+		set := vectors.Folder
+		if kind == "file" {
+			set = vectors.File
+		}
+		if len(set.Accept) == 0 || len(set.Reject) == 0 {
+			t.Fatalf("%s vectors are empty; this guard would be vacuous", kind)
+		}
+		for _, name := range set.Accept {
+			if !re.MatchString(name) {
+				t.Errorf("%s rule rejects %q, which PHP and JS accept", kind, name)
+			}
+		}
+		for _, name := range set.Reject {
+			if re.MatchString(name) {
+				t.Errorf("%s rule accepts %q, which PHP and JS reject", kind, name)
+			}
+		}
+	}
+}
 
 func capitalize(s string) string {
 	if s == "" {
@@ -104,8 +144,8 @@ func TestValidateFile_SizeLimit(t *testing.T) {
 }
 
 func TestValidateFile_NameCharacters(t *testing.T) {
-	if ok, _ := ValidateFile("bad name!.txt", 1024); ok {
-		t.Errorf("name with !-character must be rejected (matches REGEX_FILE_NAME)")
+	if ok, _ := ValidateFile("bad name?.txt", 1024); ok {
+		t.Errorf("name with ?-character must be rejected (matches REGEX_FILE_NAME)")
 	}
 	if ok, reason := ValidateFile("Geschäftsbericht.pdf", 1024); !ok {
 		t.Errorf("umlaut name must be accepted: %s", reason)

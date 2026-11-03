@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -407,12 +408,20 @@ func (s *Session) Upload(requestJSON string, sink ProgressSink) (out string, err
 	}
 
 	client := api.NewClient().ParkScanBudget()
-	resp, err := client.Upload(ctx, cursor.EncryptedPath, cursor.RemoteDir, report, options)
+	resp, err := e2ee.SendCreate(func() (*api.Response, error) {
+		return client.Upload(ctx, cursor.EncryptedPath, cursor.RemoteDir, report, maps.Clone(options))
+	}, func() error {
+		if err := s.mintUploadRef(ctx, options, cursor.RemoteDir); err != nil {
+			return err
+		}
+		cursor.Options["e2ee_node_id"], cursor.Options["e2ee_sealed_parent"] = options["e2ee_node_id"], options["e2ee_sealed_parent"]
+		return nil
+	})
 	if blown := guard.failure(); blown != nil {
 		return failedUpload(blown, cursor)
 	}
 	if err != nil {
-		return failedUpload(err, cursor)
+		return failedUpload(err, s.dropStaleSeal(ctx, err, cursor))
 	}
 	if resp == nil || !resp.Success {
 		message := "upload refused"
@@ -422,11 +431,26 @@ func (s *Session) Upload(requestJSON string, sink ProgressSink) (out string, err
 		if resp == nil {
 			return failedUpload(errors.New(message), cursor)
 		}
-		return failedUpload(refusalError(resp, message), cursor)
+		refused := refusalError(resp, message)
+		return failedUpload(refused, s.dropStaleSeal(ctx, refused, cursor))
+	}
+	nodeID := uploadedNodeID(resp.Raw)
+	if nodeID == "" {
+		return failedUpload(errors.New("the upload receipt names no valid node id"), cursor)
 	}
 
 	os.Remove(cursor.EncryptedPath)
-	return encodeJSON(uploadResult{OK: true, Message: resp.Message, Bytes: cursor.TotalBytes, NodeID: uploadedNodeID(resp.Raw)})
+	return encodeJSON(uploadResult{OK: true, Message: resp.Message, Bytes: cursor.TotalBytes, NodeID: nodeID})
+}
+
+func (s *Session) dropStaleSeal(ctx context.Context, cause error, cursor *uploadCursor) *uploadCursor {
+	var apiErr *api.APIError
+	if cursor == nil || !errors.As(cause, &apiErr) || apiErr.Code != api.UploadCodeScannerKeyStale {
+		return cursor
+	}
+	_, _ = s.keys.TeeSealWentStale(ctx, cause, nil)
+	os.Remove(cursor.EncryptedPath)
+	return nil
 }
 
 type sinkGuard struct {
@@ -517,6 +541,12 @@ func (s *Session) resumeOrPrepare(ctx context.Context, req *uploadRequest) (*upl
 			return nil, err
 		}
 		if _, err := os.Stat(cursor.EncryptedPath); err == nil {
+			if cursor.Options == nil {
+				cursor.Options = map[string]string{}
+			}
+			if err := s.mintUploadRef(ctx, cursor.Options, cursor.RemoteDir); err != nil {
+				return &cursor, err
+			}
 			return &cursor, nil
 		}
 	}
@@ -571,6 +601,10 @@ func (s *Session) resumeOrPrepare(ctx context.Context, req *uploadRequest) (*upl
 		os.Remove(artifacts.EncryptedPath)
 		return nil, err
 	}
+	if err := s.mintUploadRef(ctx, options, req.RemoteDir); err != nil {
+		os.Remove(artifacts.EncryptedPath)
+		return nil, err
+	}
 
 	var total int64
 	if stat, statErr := os.Stat(artifacts.EncryptedPath); statErr == nil {
@@ -584,6 +618,22 @@ func (s *Session) resumeOrPrepare(ctx context.Context, req *uploadRequest) (*upl
 		TotalBytes:    total,
 		Options:       options,
 	}, nil
+}
+
+func (s *Session) mintUploadRef(ctx context.Context, options map[string]string, remoteDir string) error {
+	parentKey, err := s.keys.ParentKey()
+	if err != nil {
+		return err
+	}
+	ref, err := s.keys.MintRefIn(ctx, api.NewClient(), remoteDir, parentKey)
+	if errors.Is(err, e2ee.ErrRemoteMissing) {
+		return &api.APIError{Code: api.UploadCodeInvalidUploadDir, Class: ErrorClassPermanent, Message: err.Error()}
+	}
+	if err != nil {
+		return err
+	}
+	e2ee.AddNodeRef(options, ref)
+	return nil
 }
 
 func (s *Session) underCacheDir(p string) error {

@@ -75,6 +75,7 @@ func (s *recordingUploadServer) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set("Content-Type", "application/json")
 	if req.Command == "in" && !exists {
+		w.WriteHeader(http.StatusNotFound)
 		io.WriteString(w, `{"success":false,"message":"not found"}`)
 		return
 	}
@@ -259,9 +260,10 @@ func TestEnsureRemoteDirWireAndErrorContract(t *testing.T) {
 			defer ts.Close()
 			withTestEndpoint(t, ts.URL)
 
-			err := ensureRemoteDir(context.Background(), api.NewClient(), tc.remote)
+			dirs := &remoteDirSet{ids: map[string]string{}, fresh: map[string]bool{}}
+			err := dirs.ensureRoot(context.Background(), api.NewClient(), tc.remote)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("ensureRemoteDir error = %v, want error: %v", err, tc.wantErr)
+				t.Fatalf("ensureRoot error = %v, want error: %v", err, tc.wantErr)
 			}
 			if tc.wantText != "" && !strings.Contains(err.Error(), tc.wantText) {
 				t.Errorf("error %q does not name the directory it could not create (%q); "+

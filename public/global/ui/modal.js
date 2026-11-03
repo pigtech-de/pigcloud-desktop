@@ -28,7 +28,7 @@ window.PigcloudModal = (() => {
         header.appendChild(title);
 
         const closeBtn = document.createElement('button');
-        closeBtn.className = 'icon-button is-ghost modal-close';
+        closeBtn.className = 'icon-button is-sm modal-close';
         closeBtn.type = 'button';
         const closeLabel = label('closeLabel', 'Close');
         closeBtn.setAttribute('aria-label', closeLabel);
@@ -52,6 +52,8 @@ window.PigcloudModal = (() => {
         return {overlay, content, header, title, closeBtn, body, footer};
     }
 
+    const escapeStack = [];
+
     function mount(opts) {
         const overlay = opts.overlay;
         const trapTarget = opts.trapTarget || overlay;
@@ -63,6 +65,7 @@ window.PigcloudModal = (() => {
 
         function onDocKeydown(e) {
             if (e.key !== 'Escape' || !document.body.contains(overlay)) return;
+            if (escapeStack[escapeStack.length - 1] !== overlay) return;
             if (escape === 'capture') e.stopPropagation();
             if (opts.preventEscapeDefault) e.preventDefault();
             close();
@@ -72,6 +75,8 @@ window.PigcloudModal = (() => {
             if (closed) return;
             closed = true;
             if (escape) document.removeEventListener('keydown', onDocKeydown, escape === 'capture');
+            const stackIndex = escapeStack.lastIndexOf(overlay);
+            if (stackIndex !== -1) escapeStack.splice(stackIndex, 1);
             for (const proxy of selects) {
                 if (proxy && typeof proxy.destroy === 'function') proxy.destroy();
             }
@@ -91,7 +96,10 @@ window.PigcloudModal = (() => {
         if (opts.overlayClick !== false) {
             overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
         }
-        if (escape && !popup) document.addEventListener('keydown', onDocKeydown, escape === 'capture');
+        if (escape && !popup) {
+            escapeStack.push(overlay);
+            document.addEventListener('keydown', onDocKeydown, escape === 'capture');
+        }
 
         document.body.appendChild(overlay);
         releaseTrap = window.trapFocusInModal(trapTarget, {entry: opts.focusEntry !== false});
@@ -110,10 +118,17 @@ window.PigcloudModal = (() => {
         };
     }
 
+    let floatSuppressed = false;
     function syncModalOpenClass() {
         const open = [...document.querySelectorAll('.modal-overlay')]
-            .some(el => el.style.display === 'flex');
-        document.body.classList.toggle('modal-open', open);
+            .filter(el => el.style.display === 'flex');
+        document.body.classList.toggle('modal-open', open.length > 0);
+        const suppress = open.some(el => !el.classList.contains('preview-modal'));
+        const stack = window.PigcloudFloatingStack;
+        if (!stack || suppress === floatSuppressed) return;
+        floatSuppressed = suppress;
+        if (suppress) stack.suppress('modal');
+        else stack.unsuppress('modal');
     }
 
     function armOverlayWatch(observer) {

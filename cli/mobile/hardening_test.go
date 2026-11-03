@@ -276,6 +276,9 @@ func TestCancelStopsAnUploadInFlight(t *testing.T) {
 
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answersIn(w, r) {
+			return
+		}
 		if r.URL.Query().Get("action") == "tee-attestation" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"success":true,"enabled":false,"available":false}`))
@@ -443,6 +446,9 @@ func TestASecondConcurrentUploadIsRefused(t *testing.T) {
 
 	release := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answersIn(w, r) {
+			return
+		}
 		if r.URL.Query().Get("action") == "tee-attestation" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"success":true,"enabled":false,"available":false}`))
@@ -517,6 +523,9 @@ func TestCancelDoesNotBlockBehindTheEncryptPass(t *testing.T) {
 	release := make(chan struct{})
 	var once sync.Once
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answersIn(w, r) {
+			return
+		}
 		if r.URL.Query().Get("action") == "tee-attestation" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"success":true,"enabled":false,"available":false}`))

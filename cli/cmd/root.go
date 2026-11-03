@@ -51,7 +51,7 @@ Quick Start:
   pigcloud dl /file.txt . # Download a file`
 
 func buildAliasLine() string {
-	return "\n\nUse 'pc' as a shorthand for 'pigcloud'. Run 'pc hl' for the full command tree."
+	return "\n\nUse 'pc' as a shorthand for 'pigcloud'. Run 'pc hl <command>' for details on a command."
 }
 
 var rootCmd = &cobra.Command{
@@ -103,7 +103,7 @@ func init() {
 			fmt.Println()
 			fmt.Println(color.YellowString("ℹ") + " First time? Run " + color.CyanString("pc login") + " to authenticate, then " + color.CyanString("pc hi") + " for a quickstart tour.")
 		}
-		runHelp()
+		cmd.Help()
 	}
 
 	rootCmd.SuggestionsMinimumDistance = 2

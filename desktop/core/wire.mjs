@@ -23,7 +23,7 @@ export const WIRE_SCHEMAS = Object.freeze(Object.fromEntries(Object.entries({
         remote_path: 'string?', mode: 'string?', sync_dir: 'string?', cache_used: 'int64?',
         cache_max: 'int64?', pending_count: 'int?', failed_count: 'int?', deferred_count: 'int?',
         next_due_seconds: 'int?', retried: 'int?', failed_download_count: 'int?',
-        last_poll: 'string?', uptime: 'string?', cleaned: 'int?',
+        last_poll: 'string?', uptime: 'string?', watcher_degraded: 'bool?', watcher_error: 'string?', mass_delete_held: 'int?', cleaned: 'int?',
         files: '[]FileEntry?', activity: '[]ActivityEvent?',
     },
     mountStatusJSON: {

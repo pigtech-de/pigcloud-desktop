@@ -3,6 +3,7 @@ package syncer
 import (
 	"encoding/hex"
 	"encoding/json"
+	"strings"
 
 	"pigcloud/internal/api"
 )
@@ -10,6 +11,7 @@ import (
 type uploadedContent struct {
 	digest string
 	etag   string
+	nodeID string
 }
 
 func confirmedUploadContent(response *api.Response, digest string) uploadedContent {
@@ -20,6 +22,9 @@ func confirmedUploadContent(response *api.Response, digest string) uploadedConte
 	}
 	if decoded, err := hex.DecodeString(payload.ETag); err == nil && len(decoded) == 32 {
 		result.etag = payload.ETag
+	}
+	if decoded, err := hex.DecodeString(payload.NodeID); err == nil && len(decoded) == 16 {
+		result.nodeID = strings.ToLower(payload.NodeID)
 	}
 	return result
 }

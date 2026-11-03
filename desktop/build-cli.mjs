@@ -1,4 +1,4 @@
-import {mkdir, copyFile} from 'node:fs/promises';
+import {mkdir, copyFile, readFile} from 'node:fs/promises';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {join} from 'node:path';
@@ -20,8 +20,26 @@ const include = goos === 'windows' && cgo === '1'
 const output = new URL(`resources/pc${goos === 'windows' ? '.exe' : ''}`, import.meta.url);
 await mkdir(new URL('resources/', import.meta.url), {recursive: true});
 await copyFile(new URL('../private/file-types.json', import.meta.url), new URL('../cli/internal/filetypes/file-types.json', import.meta.url));
-const result = spawnSync('go', ['build', '-trimpath', '-ldflags=-s -w', '-o', fileURLToPath(output), '.'], {
-    cwd: fileURLToPath(new URL('../cli/', import.meta.url)),
+const versionShape = /^[0-9A-Za-z.-]+$/;
+const cliDir = fileURLToPath(new URL('../cli/', import.meta.url));
+const described = spawnSync('git', ['describe', '--tags', '--match', 'cli-v*', '--abbrev=0'], {cwd: cliDir, encoding: 'utf8', timeout: 30000});
+let cliVersion = described.status === 0 ? described.stdout.trim().replace(/^cli-v/, '') : '';
+if (!versionShape.test(cliVersion)) {
+    const main = await readFile(new URL('../cli/main.go', import.meta.url), 'utf8').catch(() => '');
+    cliVersion = (main.match(/version\s*=\s*"([^"]+)"/) || [])[1] || '';
+}
+let desktopVersion = process.env.PIGCLOUD_DESKTOP_VERSION || '';
+if (!desktopVersion) {
+    desktopVersion = await readFile(new URL('package.json', import.meta.url), 'utf8')
+        .then((text) => JSON.parse(text).version || '')
+        .catch(() => '');
+}
+const stamp = versionShape.test(cliVersion)
+    ? ` -X main.version=${cliVersion}+desktop${versionShape.test(desktopVersion) ? `.${desktopVersion}` : ''}`
+    : '';
+if (!stamp) console.warn('build-cli: no usable version to stamp, building unstamped');
+const result = spawnSync('go', ['build', '-trimpath', `-ldflags=-s -w${stamp}`, '-o', fileURLToPath(output), '.'], {
+    cwd: cliDir,
     env: {...process.env, ...include, GOOS: goos, GOARCH: goarch, CGO_ENABLED: cgo},
     stdio: 'inherit',
     timeout: 300000,

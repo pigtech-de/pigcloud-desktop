@@ -148,6 +148,15 @@ export class CliRunner {
         }
     }
 
+    async logout({ signal, timeoutMs = 120000 }) {
+        try {
+            await this.run(['lo'], { signal, timeoutMs });
+        } catch (error) {
+            if (error.code === 'loginCancelled') throw error;
+            throw new SyncError('loginFailed');
+        }
+    }
+
     async loginDevice({ openVerification, signal, timeoutMs = 930000 }) {
         let authorized = false;
         let complete = false;

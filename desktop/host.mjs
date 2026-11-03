@@ -200,10 +200,10 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         cliLoginAbort?.abort();
         return {ok: true};
     };
-    const loginCli = () => {
+    const loginCli = ({replace = false} = {}) => {
         if (cliLogin) return cliLogin;
         cliLoginAbort = new AbortController();
-        cliLogin = engine.loginCli({signal: cliLoginAbort.signal, openVerification: async verification => {
+        cliLogin = engine.loginCli({replace: replace === true, signal: cliLoginAbort.signal, openVerification: async verification => {
             const url = deviceVerificationUrl(verification);
             if (!url) throw new Error('Invalid local sync sign-in destination.');
             if (closing || cliLoginAbort.signal.aborted) throw new Error('Local sync sign-in was cancelled.');
@@ -278,7 +278,9 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         return show();
     };
     const isTemplate = process.platform === 'darwin';
+    let trayIconVersion = 0;
     const loadTrayIcon = () => {
+        trayIconVersion++;
         const name = trayImageName(process.platform, systemDark());
         const image = nativeImage.createFromPath(join(root, 'bundle', name));
         if (image.isEmpty()) throw new Error('tray_unavailable');
@@ -319,14 +321,19 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             diagnostics.record('native_action_failed').catch(() => {});
         }
     };
+    let trayShown = {};
     const refreshTray = state => {
         lastStatus = state;
         refreshShell(state);
         if (!tray) return;
         try {
-            tray.setToolTip(traySummary(state, t).slice(0, 127));
-            tray.setContextMenu(Menu.buildFromTemplate(trayMenu({...state, updates: updates.snapshot()}, t, trayActions)));
-            tray.setImage(badgedTrayIcon(state.state));
+            const summary = traySummary(state, t).slice(0, 127);
+            const template = trayMenu({...state, updates: updates.snapshot()}, t, trayActions);
+            const menuKey = JSON.stringify([(state.pairs || []).map(pair => pair.id), template.map(({label, enabled, submenu}) => [label, enabled, submenu?.map(item => [item.label, item.enabled])])]);
+            if (summary !== trayShown.summary) tray.setToolTip(summary);
+            if (menuKey !== trayShown.menuKey) tray.setContextMenu(Menu.buildFromTemplate(template));
+            if (trayIconVersion !== trayShown.icon || state.state !== trayShown.state) tray.setImage(badgedTrayIcon(state.state));
+            trayShown = {summary, menuKey, icon: trayIconVersion, state: state.state};
         } catch {
             tray?.destroy();
             tray = null;
@@ -344,14 +351,17 @@ export async function createDesktopHost(electron, createEngine, {offline = false
         }
         return {applied: paint.base};
     };
+    let settingsRevision = null;
     unsubscribe = engine.subscribe(state => {
         broadcast({...state, updates: updates.snapshot()});
         refreshTray(state);
         updates.settle();
+        if (state.revision === settingsRevision) return;
+        settingsRevision = state.revision;
         engine.getSettings().then(value => {
             settings = value;
             updates.setPrerelease(value.allowPrerelease);
-        }).catch(() => {});
+        }).catch(() => { settingsRevision = null; });
     });
     try {
         trayIcon = loadTrayIcon();
@@ -363,7 +373,9 @@ export async function createDesktopHost(electron, createEngine, {offline = false
             try {
                 trayIcon = loadTrayIcon();
                 refreshTray(lastStatus);
-            } catch {  }
+            } catch {
+                return;
+            }
         };
         nativeTheme.on('updated', onThemeChange);
     } catch {

@@ -3,6 +3,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -143,6 +144,26 @@ func runUpload(localPath, remotePath string) {
 	}
 
 	var e2eeOpts map[string]string
+	var nodeRef e2ee.NodeRef
+	var remint func() error
+	if parentKey := writerParentKey(); parentKey != nil {
+		parentID, err := cmdutil.ResolveDirID(ctx, remoteDirOf(resolvedPath))
+		if err == nil {
+			nodeRef, err = e2ee.MintSealedNode(parentID, parentKey)
+		}
+		if err != nil {
+			refuseWrite(err)
+		}
+		remint = func() error {
+			next, err := e2ee.MintSealedNode(parentID, parentKey)
+			if err == nil {
+				nodeRef = next
+				e2ee.AddNodeRef(e2eeOpts, nodeRef)
+			}
+			return err
+		}
+	}
+
 	var sealed *e2ee.UploadArtifacts
 	defer func() {
 		if sealed != nil {
@@ -178,6 +199,9 @@ func runUpload(localPath, remotePath string) {
 		e2eeOpts["signing_pk_mldsa"] = pkMl
 		uploadFullPath := strings.TrimLeft(fullUploadPath, "/")
 		cmdutil.AddE2eeNameFields(e2eeOpts, fileName, uploadFullPath, ExitWithError)
+		if nodeRef.ID != "" {
+			e2ee.AddNodeRef(e2eeOpts, nodeRef)
+		}
 
 		cmdutil.AddPathTokensFor(e2eeOpts, resolvedPath, e2ee.SelfAndParent, ExitWithError)
 
@@ -200,9 +224,11 @@ func runUpload(localPath, remotePath string) {
 
 	var resp *api.Response
 	sealed, resp, err = sendResealingOnce(ctx, fileName, sealed, seal, func() (*api.Response, error) {
-		return uploadHonouringRateLimit(ctx, client, &rateLimitGate{}, fileName, uploadPath, resolvedPath, func(sent, total int64) {
-			bar.Set64(sent)
-		}, e2eeOpts)
+		return e2ee.SendCreate(func() (*api.Response, error) {
+			return uploadHonouringRateLimit(ctx, client, &rateLimitGate{}, fileName, uploadPath, resolvedPath, func(sent, total int64) {
+				bar.Set64(sent)
+			}, e2eeOpts)
+		}, remint)
 	})
 
 	bar.Finish()
@@ -246,17 +272,23 @@ type fileEntry struct {
 
 func runRecursiveUpload(ctx context.Context, localDir, remotePath string) {
 	resolvedRemote := cmdutil.ResolvePath(remotePath)
-	dirName := filepath.Base(localDir)
+	absLocal, err := filepath.Abs(localDir)
+	if err != nil {
+		output.PrintError("Cannot resolve " + localDir + ": " + err.Error())
+		ExitWithError()
+	}
+	dirName := filepath.Base(absLocal)
 
 	remoteRoot := resolvedRemote + "/" + dirName
 	if strings.HasSuffix(resolvedRemote, "/") {
 		remoteRoot = resolvedRemote + dirName
 	}
+	remoteRoot = path.Clean(remoteRoot)
 
 	var files []fileEntry
 	var totalSize int64
 
-	err := filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
+	err = filepath.Walk(localDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
@@ -286,15 +318,16 @@ func runRecursiveUpload(ctx context.Context, localDir, remotePath string) {
 
 	dirs := collectDirs(localDir)
 	client := api.NewClient().WaitOutScanBudget()
+	remoteDirs := &remoteDirSet{ids: map[string]string{}, fresh: map[string]bool{}, parentKey: writerParentKey()}
 
-	if err := ensureRemoteDir(ctx, client, remoteRoot); err != nil {
+	if err := remoteDirs.ensureRoot(ctx, client, remoteRoot); err != nil {
 		output.PrintError("Failed to create remote directory: " + err.Error())
 		ExitWithError()
 	}
 	for _, dir := range dirs {
-		remoteDirPath := remoteRoot + "/" + filepath.ToSlash(dir)
-		if err := ensureRemoteDir(ctx, client, remoteDirPath); err != nil {
-			output.PrintWarning("Failed to create directory " + remoteDirPath + ": " + err.Error())
+		remoteDirPath := path.Join(remoteRoot, filepath.ToSlash(dir))
+		if err := remoteDirs.ensureChild(ctx, client, remoteDirPath); err != nil {
+			output.PrintError("Failed to create directory " + remoteDirPath + ", its files will not be uploaded: " + err.Error())
 		}
 	}
 
@@ -304,6 +337,7 @@ func runRecursiveUpload(ctx context.Context, localDir, remotePath string) {
 		files:      files,
 		remoteRoot: remoteRoot,
 		useE2EE:    e2ee.HasE2EEKeys(),
+		dirs:       remoteDirs,
 	}
 	uploader.run()
 
@@ -328,6 +362,7 @@ type recursiveUploader struct {
 	files      []fileEntry
 	remoteRoot string
 	useE2EE    bool
+	dirs *remoteDirSet
 
 	succeeded atomic.Int64
 	failed    atomic.Int64
@@ -405,6 +440,15 @@ func (u *recursiveUploader) alreadyUploaded(remoteFilePath string) bool {
 
 func (u *recursiveUploader) sealForUpload(f fileEntry, remoteFilePath string) (*e2ee.UploadArtifacts, int64, map[string]string) {
 	fileName := filepath.Base(f.localPath)
+	var nodeRef e2ee.NodeRef
+	if u.dirs != nil && u.dirs.parentKey != nil {
+		var err error
+		nodeRef, err = e2ee.MintSealedNode(u.dirs.ids[remoteParentDir(remoteFilePath)], u.dirs.parentKey)
+		if err != nil {
+			output.PrintError("Failed to seal " + f.relPath + ": " + err.Error())
+			return nil, 0, nil
+		}
+	}
 	sealed := cmdutil.HandleE2EEUpload(u.ctx, f.localPath, ExitWithError)
 	if sealed == nil {
 		return nil, 0, nil
@@ -437,6 +481,9 @@ func (u *recursiveUploader) sealForUpload(f fileEntry, remoteFilePath string) (*
 
 	fullUploadPath := strings.TrimLeft(remoteFilePath, "/")
 	cmdutil.AddE2eeNameFields(opts, fileName, fullUploadPath, ExitWithError)
+	if nodeRef.ID != "" {
+		e2ee.AddNodeRef(opts, nodeRef)
+	}
 	if parentDir := path.Dir(fullUploadPath); parentDir != "." && parentDir != "" {
 		cmdutil.AddPathTokensFor(opts, parentDir, e2ee.SelfAndAncestors, ExitWithError)
 	}
@@ -475,8 +522,13 @@ func sendResealingOnce(ctx context.Context, label string, sealed *e2ee.UploadArt
 }
 
 func (u *recursiveUploader) uploadOne(i int, f fileEntry) {
-	remoteFilePath := u.remoteRoot + "/" + filepath.ToSlash(f.relPath)
+	remoteFilePath := path.Join(u.remoteRoot, filepath.ToSlash(f.relPath))
 
+	if u.dirs != nil && !u.dirs.has(remoteParentDir(remoteFilePath)) {
+		output.PrintError("Skipping " + f.relPath + ": its folder could not be created")
+		u.failed.Add(1)
+		return
+	}
 	if u.alreadyUploaded(remoteFilePath) {
 		u.skipped.Add(1)
 		return
@@ -525,10 +577,17 @@ func (u *recursiveUploader) uploadOne(i int, f fileEntry) {
 	}
 	var resp *api.Response
 	var err error
+	var remint func() error
+	if u.dirs != nil && u.dirs.parentKey != nil {
+		mint := mintInto(u.dirs.ids[remoteParentDir(remoteFilePath)], u.dirs.parentKey)
+		remint = func() error { return mint(e2eeOpts) }
+	}
 	sealed, resp, err = sendResealingOnce(u.ctx, f.relPath, sealed, reseal, func() (*api.Response, error) {
-		return uploadHonouringRateLimit(u.ctx, u.client, &u.rateGate, f.relPath, uploadPath, remoteParentDir(remoteFilePath), func(sent, total int64) {
-			bar.Set64(sent)
-		}, e2eeOpts)
+		return e2ee.SendCreate(func() (*api.Response, error) {
+			return uploadHonouringRateLimit(u.ctx, u.client, &u.rateGate, f.relPath, uploadPath, remoteParentDir(remoteFilePath), func(sent, total int64) {
+				bar.Set64(sent)
+			}, e2eeOpts)
+		}, remint)
 	})
 
 	bar.Finish()
@@ -587,29 +646,116 @@ func (u *recursiveUploader) counts() (int64, int64, int64) {
 	return u.succeeded.Load(), u.failed.Load(), u.skipped.Load()
 }
 
-func ensureRemoteDir(ctx context.Context, client *api.Client, remotePath string) error {
-	options := map[string]string{
-		"source":  remotePath,
-		"parents": "true",
-	}
-	if e2ee.HasE2EEKeys() {
-		cmdutil.AddPathTokensFor(options, remotePath, e2ee.SelfAndParent, ExitWithError)
-		if trimmed := strings.TrimPrefix(remotePath, "/"); trimmed != "" {
-			cmdutil.AddE2eeNameFieldsForMkParents(options, strings.Split(trimmed, "/"), ExitWithError)
-		}
-	}
-	resp, err := client.Execute(ctx, "mk", options)
+type remoteDirSet struct {
+	ids       map[string]string
+	fresh     map[string]bool
+	parentKey []byte
+}
+
+func (s *remoteDirSet) has(remotePath string) bool {
+	_, ok := s.ids[remotePath]
+	return ok
+}
+
+func (s *remoteDirSet) ensureRoot(ctx context.Context, client *api.Client, remotePath string) error {
+	return s.ensureChain(ctx, api.WaitOutRateLimits(client), remotePath)
+}
+
+func (s *remoteDirSet) ensureChain(ctx context.Context, exec api.Executor, remotePath string) error {
+	chain, err := e2ee.EnsureFolderChain(ctx, exec, remotePath, s.parentKey)
 	if err != nil {
 		return err
 	}
-	if resp != nil && !resp.Success && resp.ErrorCode != mkPathExistsCode {
-		reason := strings.TrimSpace(resp.Message)
-		if reason == "" {
-			reason = "the server declined it"
-		}
-		return fmt.Errorf("could not create remote directory %s: %s", remotePath, reason)
+	if chain.Resp == nil {
+		return fmt.Errorf("could not create remote directory %s: no answer", remotePath)
 	}
+	if !chain.Resp.Success && chain.Resp.ErrorCode != mkPathExistsCode {
+		return mkRefusal(remotePath, chain.Resp)
+	}
+	s.ids[remotePath] = chain.LeafID
+	s.fresh[remotePath] = chain.Created
 	return nil
+}
+
+func (s *remoteDirSet) ensureChild(ctx context.Context, client *api.Client, remotePath string) error {
+	exec := api.WaitOutRateLimits(client)
+	parent := remoteParentDir(remotePath)
+	parentID, ok := s.ids[parent]
+	if !ok {
+		return fmt.Errorf("its parent folder %s was not created", parent)
+	}
+	if s.parentKey == nil {
+		return s.ensureChain(ctx, exec, remotePath)
+	}
+	if !s.fresh[parent] {
+		if id, found, err := existingDirID(ctx, exec, remotePath); err != nil {
+			return err
+		} else if found {
+			s.ids[remotePath] = id
+			return nil
+		}
+	}
+	options := map[string]string{"source": remotePath}
+	if err := e2ee.AddPathTokensFor(options, remotePath, e2ee.SelfAndParent); err != nil {
+		return err
+	}
+	fullPath, baseName := e2ee.ResolveAndBaseName(remotePath)
+	if err := e2ee.AddE2eeNameFields(options, baseName, fullPath); err != nil {
+		return err
+	}
+	mint := mintInto(parentID, s.parentKey)
+	if err := mint(options); err != nil {
+		return err
+	}
+	resp, err := e2ee.SendCreate(func() (*api.Response, error) {
+		return exec.Execute(ctx, "mk", options)
+	}, func() error { return mint(options) })
+	if err != nil {
+		return err
+	}
+	if !resp.Success && resp.ErrorCode == mkPathExistsCode {
+		id, found, err := existingDirID(ctx, exec, remotePath)
+		if err != nil || !found {
+			return fmt.Errorf("could not resolve %s after the server reported it exists", remotePath)
+		}
+		s.ids[remotePath] = id
+		return nil
+	}
+	if !resp.Success {
+		return mkRefusal(remotePath, resp)
+	}
+	s.ids[remotePath] = options["e2ee_node_id"]
+	s.fresh[remotePath] = true
+	return nil
+}
+
+func existingDirID(ctx context.Context, exec api.Executor, remotePath string) (string, bool, error) {
+	node, err := e2ee.StatRemote(ctx, exec, remotePath)
+	if errors.Is(err, e2ee.ErrRemoteMissing) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	if !node.IsDir {
+		return "", false, fmt.Errorf("not a directory: %s", remotePath)
+	}
+	return node.ID, true, nil
+}
+
+func mkRefusal(remotePath string, resp *api.Response) error {
+	reason := strings.TrimSpace(resp.Message)
+	if reason == "" {
+		reason = "the server declined it"
+	}
+	return fmt.Errorf("could not create remote directory %s: %s", remotePath, reason)
+}
+
+func remoteDirOf(target string) string {
+	if trimmed := strings.TrimRight(target, "/"); trimmed != "" {
+		return trimmed
+	}
+	return "/"
 }
 
 const mkPathExistsCode = "path_exists"

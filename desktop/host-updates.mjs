@@ -4,6 +4,11 @@ export const CHECK_INTERVAL = 6 * 60 * 60 * 1000;
 export const STOP_DEADLINE = 30000;
 const NO_RELEASE = new Set(['ERR_UPDATER_NO_PUBLISHED_VERSIONS', 'ERR_UPDATER_LATEST_VERSION_NOT_FOUND']);
 
+function noRelease(error) {
+    return NO_RELEASE.has(error?.code) || (error?.code === 'ERR_UPDATER_INVALID_RELEASE_FEED'
+        && /Unable to find latest version|No published versions/u.test(String(error.message || '')));
+}
+
 function parseVersion(value) {
     const text = String(value ?? '').trim().replace(/^v/, '');
     const build = text.indexOf('+');
@@ -60,6 +65,8 @@ export function createUpdates({updater, currentVersion, packaged = true, onChang
     let waiting = false;
     let downloaded = '';
     let allowPrerelease = false;
+    const prereleaseBuild = (parseVersion(currentVersion)?.pre.length ?? 0) > 0;
+    const searchPrerelease = () => allowPrerelease || prereleaseBuild;
     let timer = null;
     let closed = false;
     let pending = null;
@@ -87,7 +94,7 @@ export function createUpdates({updater, currentVersion, packaged = true, onChang
         updater.autoDownload = false;
         updater.autoInstallOnAppQuit = false;
         updater.allowDowngrade = false;
-        updater.allowPrerelease = allowPrerelease;
+        updater.allowPrerelease = searchPrerelease();
         updater.setFeedURL(UPDATE_FEED);
         updater.on('checking-for-update', () => {
             if (!downloaded && state !== 'installing') move('checking', {version, percent: 0});
@@ -122,7 +129,7 @@ export function createUpdates({updater, currentVersion, packaged = true, onChang
         });
         updater.on('error', error => {
             if (state === 'installing') return;
-            if (NO_RELEASE.has(error?.code) && !downloaded) {
+            if (noRelease(error) && !downloaded) {
                 move('idle');
                 return;
             }
@@ -177,9 +184,9 @@ export function createUpdates({updater, currentVersion, packaged = true, onChang
             const next = Boolean(value);
             if (next === allowPrerelease) return;
             allowPrerelease = next;
-            if (updater && packaged) updater.allowPrerelease = next;
+            if (updater && packaged) updater.allowPrerelease = searchPrerelease();
             publish();
-            check().catch(() => {});
+            (pending ? pending.finally(() => check()) : check()).catch(() => {});
         },
         start() {
             if (closed || timer) return;

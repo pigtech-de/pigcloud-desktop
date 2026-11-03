@@ -45,18 +45,8 @@
 }
 
 .account-activity-mark-all-read {
-    background: transparent;
-    color: var(--primary-ink);
     cursor: pointer;
-    font-weight: 600;
     font-size: var(--font-size-sm);
-    padding: var(--space-4) var(--space-8);
-    border-radius: var(--radius-sm);
-}
-
-.account-activity-mark-all-read:hover,
-.account-activity-mark-all-read:focus-visible {
-    background-color: var(--surface-muted);
 }
 
 .account-activity-pagination {
@@ -310,6 +300,10 @@
     line-height: 1;
 }
 
+body.native-ios .settings-nav-badge {
+    display: none;
+}
+
 .settings-nav-item:hover,
 .settings-nav-item:focus-visible {
     background-color: var(--surface-focus);
@@ -370,8 +364,8 @@
     border-radius: var(--radius-md);
 }
 
-.auth-method-card--warn {
-    background: color-mix(in srgb, var(--error-color) 20%, var(--background-color));
+.auth-method-card--warn .auth-method-icon {
+    color: var(--error-ink);
 }
 
 .auth-method-icon {
@@ -468,11 +462,6 @@
         grid-column: 1 / -1;
         justify-self: start;
     }
-
-    .auth-method-actions .btn-sm {
-        min-height: 44px;
-        padding-block: var(--space-8);
-    }
 }
 
 @media (max-width: 640px) {
@@ -517,9 +506,29 @@
     display: none;
 }
 
+body:not(.mobile-app) .settings-help-rail.sheet {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-12);
+    z-index: var(--z-dropdown);
+}
+
+.settings-page-actions {
+    grid-column: 3;
+    justify-self: end;
+}
+
+body.mobile-app .settings-help-sheet-toggle {
+    display: none;
+}
+
 @media (min-width: 1025px) {
     .settings-page-layout {
         grid-template-columns: 240px minmax(0, 1fr) clamp(320px, 24vw, 520px);
+    }
+
+    .settings-help-sheet-toggle {
+        display: none;
     }
 
     .settings-help-rail {
@@ -623,7 +632,8 @@
     min-width: 0;
 }
 
-.settings-help-card-title mark {
+.settings-help-card-title mark,
+.settings-help-card-body mark {
     background-color: color-mix(in srgb, var(--primary-color) 25%, transparent);
     color: inherit;
     border-radius: var(--radius-xs);
@@ -657,15 +667,13 @@
     color: var(--text-secondary);
 }
 
-.settings-help-card-body h3 {
-    font-size: var(--font-size-md);
-    color: var(--text-color);
-    margin: var(--space-14) 0 var(--space-4);
+.settings-help-card-body .help-section-text {
+    gap: var(--space-8);
 }
 
 .settings-help-card-body p,
 .settings-help-card-body li {
-    margin: var(--space-6) 0;
+    margin: var(--space-8) 0;
     line-height: 1.6;
 }
 
@@ -675,12 +683,22 @@
     margin: var(--space-6) 0;
 }
 
+.settings-help-card-body .docs-table {
+    min-width: 0;
+    font-size: var(--font-size-xs);
+}
+
+.settings-help-card-body .docs-table th,
+.settings-help-card-body .docs-table td {
+    padding: var(--space-6);
+}
+
 .settings-help-card-body .help-related {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-6);
-    margin-top: var(--space-10);
+    margin-top: var(--space-8);
 }
 
 .settings-help-card-body .help-related-label {
@@ -693,6 +711,7 @@
 .settings-help-card-body .help-related-link {
     display: inline-flex;
     align-items: center;
+    gap: var(--space-4);
     background-color: var(--primary-tint-12);
     font-size: var(--font-size-2xs);
     font-weight: 600;
@@ -702,6 +721,10 @@
 .settings-help-card-body .help-related-link:hover,
 .settings-help-card-body .help-related-link:focus-visible {
     background-color: var(--primary-tint-22);
+}
+
+.settings-help-card-body .help-related-link::after {
+    margin-left: 0;
 }
 
 .settings-help-empty {
@@ -899,13 +922,6 @@
 
 .settings-skeleton-legend-item {
     --gap: var(--space-6);
-}
-
-.settings-skeleton-legend-dot {
-    width: 10px;
-    height: 10px;
-    border-radius: 50%;
-    flex-shrink: 0;
 }
 
 .settings-skeleton-legend-label {
@@ -1106,6 +1122,11 @@
     min-height: 60px;
 }
 
+#sync-pairs.account-security-list {
+    max-height: none;
+    overflow-y: visible;
+}
+
 .account-security-list[aria-busy="true"] > :not(.account-security-busy) {
     opacity: 0.4;
     pointer-events: none;
@@ -1200,8 +1221,30 @@
 }
 
 .account-security-fingerprint {
-    padding: var(--space-12);
+    padding: var(--space-8) var(--space-10);
     background-color: var(--surface-color);
+}
+
+.account-security-fingerprint.fingerprint-grid {
+    grid-template-columns: repeat(8, max-content);
+    justify-content: start;
+    gap: var(--space-2) var(--space-10);
+    border-radius: var(--radius-md);
+}
+
+.account-security-fingerprint .fingerprint-grid-group {
+    font-size: var(--font-size-sm);
+    letter-spacing: 0.04em;
+}
+
+@media (max-width: 420px) {
+    .account-security-fingerprint.fingerprint-grid {
+        grid-template-columns: repeat(4, max-content);
+    }
+}
+
+.e2ee-own-fingerprint {
+    margin-top: var(--space-12);
 }
 
 .account-security-badge {
@@ -1434,20 +1477,26 @@
     }
 }
 
-.settings-page .btn:not(.btn-primary, .btn-secondary, .is-danger) {
-    --btn-background: var(--surface-muted);
-    --btn-color: var(--text-color);
-    --btn-hover-background: color-mix(in srgb, var(--primary-color) 18%, var(--surface-muted));
-    --btn-hover-color: var(--text-color);
-    --btn-focus-background: var(--surface-focus);
-}
-
 .settings-option {
     --gap: var(--space-14);
     padding: var(--space-14) var(--space-16);
     background-color: var(--surface-color);
     border-radius: var(--radius-lg);
     transition: background-color var(--transition-fast);
+}
+
+.settings-option-group {
+    --gap: 0;
+    background-color: var(--surface-color);
+    border-radius: var(--radius-lg);
+}
+
+.settings-option-group > .settings-option {
+    background-color: transparent;
+}
+
+.settings-option-group > :not(.settings-option) {
+    margin: 0 var(--space-16) var(--space-14);
 }
 
 .settings-option-icon {
@@ -1602,18 +1651,11 @@ body.cloud-app .settings-cloud-note {
     }
 
     .icon-button.row-actions-btn {
-        width: var(--control-size-xs);
-        height: var(--control-size-xs);
+        --icon-button-size: var(--control-size-sm);
         border-radius: var(--radius-pill);
-        background-color: transparent;
         color: var(--text-secondary);
         font-size: var(--font-size-xs);
-    }
-
-    .icon-button.row-actions-btn.is-danger:hover:not(:disabled),
-    .icon-button.row-actions-btn.is-danger:focus-visible {
-        background-color: var(--surface-focus);
-        color: var(--error-ink);
+        opacity: 1;
     }
 }
 
@@ -1623,6 +1665,11 @@ body.cloud-app .settings-cloud-note {
         .row-actions-host:focus-within > .row-actions {
             opacity: 1;
             pointer-events: auto;
+        }
+
+        body:has(> .row-actions-menu) .row-actions-host:not(.is-actions-open):hover > .row-actions {
+            opacity: 0;
+            pointer-events: none;
         }
     }
 }
@@ -1732,6 +1779,42 @@ body.cloud-app .settings-cloud-note {
     overflow: hidden;
     background-color: var(--tc-bg, var(--background-color));
     border-radius: var(--radius-md);
+}
+
+.app-icon-card-preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--surface-muted);
+}
+
+.app-icon-preview {
+    position: relative;
+    display: block;
+    width: 48px;
+    height: 48px;
+    border-radius: 25%;
+}
+
+.app-icon-preview-live {
+    background-color: var(--background-color);
+}
+
+.app-icon-preview-tinted {
+    background-color: var(--surface-color);
+}
+
+.app-icon-preview-live::after,
+.app-icon-preview-tinted::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background-color: var(--primary-ink);
+    mask: url("/global/icons/launcher/mark.png") center / contain no-repeat;
+}
+
+.app-icon-preview-tinted::after {
+    background-color: var(--text-secondary);
 }
 
 .theme-card-preview-row {
@@ -2011,12 +2094,6 @@ body.cloud-app .settings-cloud-note {
         radial-gradient(ellipse 36% 8% at 57% 57%, color-mix(in srgb, var(--bg-accent-2) 36%, transparent), transparent 70%),
         radial-gradient(ellipse 40% 9% at 52% 50%, color-mix(in srgb, var(--bg-accent-3) 36%, transparent), transparent 70%);
     transform: rotate(-12deg) translate3d(0, 0.5%, 0) scale(1.06, 1.1);
-}
-
-@media (prefers-reduced-motion: no-preference) {
-    .bg-card-preview-aurora::before {
-        animation: app-bg-aurora-a 7s ease-in-out -3.5s infinite alternate;
-    }
 }
 
 .icon-style-card .bg-card-preview {
@@ -2472,7 +2549,23 @@ body.cloud-app .settings-cloud-note {
 }
 
 .file-types-ext > i {
-    font-size: var(--font-size-2xs);
+    font-size: var(--font-size-sm);
+}
+
+.file-types-ext.is-safari > i {
+    color: color-mix(in srgb, var(--warning-color) 40%, var(--text-color));
+}
+
+.file-types-ext.is-experimental > i {
+    color: color-mix(in srgb, var(--info-color) 40%, var(--text-color));
+}
+
+.file-types-ext.is-embedded > i {
+    color: color-mix(in srgb, var(--text-secondary) 60%, var(--text-color));
+}
+
+.file-types-legend .file-types-ext > i {
+    font-size: var(--font-size-xs);
 }
 
 .file-types-ext.is-hidden {
@@ -2661,28 +2754,13 @@ body.cloud-app .settings-cloud-note {
 
 .recovery-action-btn {
     flex: 1;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--space-6);
-    padding: var(--space-8) var(--space-12);
-    font-size: var(--font-size-xs);
-    font-weight: 600;
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    background-color: var(--surface-muted);
-    color: var(--text-secondary);
-    transition: background-color var(--transition-fast), color var(--transition-fast);
-}
-
-.recovery-action-btn:hover {
-    background-color: var(--primary-color);
-    color: var(--on-primary-color);
 }
 
 .recovery-action-btn.is-copied {
-    background-color: var(--secondary-color);
-    color: var(--on-secondary-color);
+    --btn-background: var(--secondary-color);
+    --btn-color: var(--on-secondary-color);
+    --btn-hover-background: var(--secondary-color);
+    --btn-hover-color: var(--on-secondary-color);
 }
 
 .recovery-key-warning {

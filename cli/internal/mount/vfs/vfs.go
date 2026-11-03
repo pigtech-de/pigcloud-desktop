@@ -41,6 +41,7 @@ type VFS struct {
 	PublicKey  *crypto.PublicKeySet
 	PrivateKey *crypto.PrivateKeySet
 	NameKey    []byte
+	ParentKey  []byte
 
 	SigningPublicKey  *crypto.SigningPublicKeySet
 	SigningPrivateKey *crypto.SigningPrivateKeySet
@@ -96,6 +97,15 @@ func New(remoteBase string, cacheDB *cache.DB, store *cache.Store, evictor *cach
 		dlSem:             make(chan struct{}, 4),
 	}
 	vfs.ctx, vfs.cancel = context.WithCancel(context.Background())
+
+	if privKey != nil {
+		if parentKey, err := crypto.DeriveParentKey(privKey); err == nil {
+			vfs.ParentKey = parentKey
+		}
+	}
+	if cacheDB != nil && vfs.ParentKey != nil {
+		cacheDB.SetParentSealer(vfs.SealParentRef)
+	}
 
 	if evictor != nil {
 		evictor.SetHooks(vfs.evictInUse, vfs.evictClear)
@@ -255,7 +265,7 @@ func (v *VFS) settleDownloadFailure(node *Node, err error) {
 		v.Cache.SetSyncStatus(node.ID, cache.StatusSynced, "")
 		return
 	}
-	v.Cache.RecordTransferFailure("vfs", node.RemotePath, node.ID, cache.FailureDownload, err)
+	v.Cache.RecordTransferFailure("vfs", node.ID, cache.FailureDownload, err)
 }
 
 func (v *VFS) Read(node *Node, off int64, size int) ([]byte, error) {
@@ -386,7 +396,7 @@ func (v *VFS) Create(parent *Node, name string) (*Node, error) {
 		return existing, nil
 	}
 
-	remotePath := joinPath(parent.RemotePath, name)
+	remotePath := JoinPath(parent.RemotePath, name)
 
 	ok, reason := ValidateFile(name, 0)
 	status := cache.StatusPending
@@ -435,7 +445,7 @@ func (v *VFS) Mkdir(parent *Node, name string) (*Node, error) {
 		return nil, fmt.Errorf("invalid directory name: %s", reason)
 	}
 
-	remotePath := joinPath(parent.RemotePath, name)
+	remotePath := JoinPath(parent.RemotePath, name)
 	fullPath := remotePath
 
 	options := map[string]string{
@@ -444,7 +454,30 @@ func (v *VFS) Mkdir(parent *Node, name string) (*Node, error) {
 	v.addE2eeNameFields(options, name, fullPath)
 	v.addPathTokens(options, []string{fullPath})
 
-	resp, err := v.Client.Execute(context.Background(), "mk", options)
+	ctx := context.Background()
+	parentNodeID, err := v.nodeIDOf(ctx, parent)
+	if err != nil {
+		return nil, fmt.Errorf("mkdir: parent folder id: %w", err)
+	}
+	if v.ParentKey == nil {
+		return nil, fmt.Errorf("mkdir: %w", e2ee.ErrParentKeyUnavailable)
+	}
+	ref, err := e2ee.MintSealedNode(parentNodeID, v.ParentKey)
+	if err != nil {
+		return nil, fmt.Errorf("mkdir: %w", err)
+	}
+	e2ee.AddNodeRef(options, ref)
+
+	resp, err := e2ee.SendCreate(func() (*api.Response, error) {
+		return v.Client.Execute(ctx, "mk", options)
+	}, func() error {
+		next, err := e2ee.MintSealedNode(parentNodeID, v.ParentKey)
+		if err == nil {
+			ref = next
+			e2ee.AddNodeRef(options, ref)
+		}
+		return err
+	})
 	if err != nil {
 		return nil, fmt.Errorf("mkdir API call: %w", err)
 	}
@@ -453,6 +486,7 @@ func (v *VFS) Mkdir(parent *Node, name string) (*Node, error) {
 	}
 
 	node := NewDirNode(name, remotePath, parent)
+	node.NodeID = ref.ID
 
 	inode := &cache.Inode{
 		RemotePath:  remotePath,
@@ -461,6 +495,7 @@ func (v *VFS) Mkdir(parent *Node, name string) (*Node, error) {
 		Mtime:       time.Now().Unix(),
 		SyncStatus:  cache.StatusSynced,
 		ParentID:    parent.ID,
+		NodeID:      ref.ID,
 	}
 	id, err := v.Cache.UpsertInode(inode)
 	if err != nil {
@@ -564,7 +599,7 @@ func (v *VFS) Rename(oldParent *Node, oldName string, newParent *Node, newName s
 		return ErrNotFound
 	}
 
-	newRemotePath := joinPath(newParent.RemotePath, newName)
+	newRemotePath := JoinPath(newParent.RemotePath, newName)
 
 	child.Mu.RLock()
 	uploaded := child.SyncStatus == cache.StatusSynced || child.SyncStatus == cache.StatusConflict
@@ -592,8 +627,29 @@ func (v *VFS) Rename(oldParent *Node, oldName string, newParent *Node, newName s
 	}
 	v.addE2eeNameFields(options, newName, newRemotePath)
 	v.addPathTokens(options, []string{child.RemotePath, newRemotePath})
+	if renameOverwritesFile(child, newParent.GetChild(newName)) {
+		options["conflict_strategy"] = "replace"
+	}
 
-	resp, err := v.Client.Execute(context.Background(), "mv", options)
+	ctx := context.Background()
+	movedID, err := v.nodeIDOf(ctx, child)
+	if err == nil && movedID == "" {
+		err = errors.New("the moved item has no node id")
+	}
+	if err != nil {
+		return fmt.Errorf("mv: %w", err)
+	}
+	destID, err := v.nodeIDOf(ctx, newParent)
+	if err != nil {
+		return fmt.Errorf("mv: destination folder id: %w", err)
+	}
+	sealed, err := v.SealParentRef(movedID, destID)
+	if err != nil {
+		return fmt.Errorf("mv: %w", err)
+	}
+	options["e2ee_sealed_parent"] = sealed
+
+	resp, err := v.Client.Execute(ctx, "mv", options)
 	if err != nil {
 		return fmt.Errorf("mv API call: %w", err)
 	}
@@ -637,9 +693,16 @@ func (v *VFS) rewriteSubtree(dir *Node, oldPrefix, newPrefix string) {
 
 		newPath := newPrefix + strings.TrimPrefix(oldPath, oldPrefix)
 
+		var storedID string
+		if old, _ := v.Cache.GetInodeByPath(oldPath); old != nil {
+			storedID = old.NodeID
+		}
 		v.untrackNode(child)
 		child.Mu.Lock()
 		child.RemotePath = newPath
+		if child.NodeID == "" {
+			child.NodeID = storedID
+		}
 		child.Mu.Unlock()
 
 		v.Cache.DeleteInode(oldPath)
@@ -653,6 +716,18 @@ func (v *VFS) rewriteSubtree(dir *Node, oldPrefix, newPrefix string) {
 			v.rewriteSubtree(child, oldPath, newPath)
 		}
 	}
+}
+
+func renameOverwritesFile(child, existing *Node) bool {
+	if existing == nil || existing == child {
+		return false
+	}
+	child.Mu.RLock()
+	childIsDir := child.IsDir
+	child.Mu.RUnlock()
+	existing.Mu.RLock()
+	defer existing.Mu.RUnlock()
+	return !childIsDir && !existing.IsDir
 }
 
 func (v *VFS) renameLocalOnlyFile(oldParent, child *Node, oldName string, newParent *Node, newName, newRemotePath string) error {
@@ -783,7 +858,7 @@ func (v *VFS) populateDir(parent *Node) error {
 	resp, err := v.Client.Execute(context.Background(), "ls", options)
 	if err != nil {
 		v.Online = false
-		mlog.Errorf("vfs: ls %q failed: %v", source, err)
+		mlog.Errorf("vfs: folder listing failed (%s)", mlog.Cause(err))
 		return fmt.Errorf("ls API call: %w", err)
 	}
 	v.Online = true
@@ -812,7 +887,7 @@ func (v *VFS) populateDir(parent *Node) error {
 		}
 
 		seen[name] = true
-		childPath := joinPath(remotePath, name)
+		childPath := JoinPath(remotePath, name)
 
 		existing := parent.Children[name]
 		if existing != nil {
@@ -832,6 +907,10 @@ func (v *VFS) populateDir(parent *Node) error {
 			}
 			existing.Etag = entry.ETag
 			v.Cache.SetRemoteVersion(existing.ID, entry.ETag)
+			if entry.ID != "" && existing.NodeID != entry.ID {
+				existing.NodeID = entry.ID
+				v.Cache.SetInodeNodeID(existing.ID, entry.ID)
+			}
 			if entry.PlaintextSize != nil {
 				existing.Size = *entry.PlaintextSize
 			}
@@ -865,6 +944,7 @@ func (v *VFS) populateDir(parent *Node) error {
 		}
 
 		node.Etag = entry.ETag
+		node.NodeID = entry.ID
 		if prior, lookupErr := v.Cache.GetInodeByPath(childPath); lookupErr == nil && prior != nil && prior.Dirty {
 			node.Dirty = true
 			node.Etag = prior.Etag
@@ -888,7 +968,11 @@ func (v *VFS) populateDir(parent *Node) error {
 	}
 
 	for name, child := range parent.Children {
-		if !seen[name] && !child.Dirty {
+		if seen[name] {
+			continue
+		}
+		v.ForgetVanished(child)
+		if !child.Dirty {
 			delete(parent.Children, name)
 			v.untrackNode(child)
 		}
@@ -908,7 +992,7 @@ func (v *VFS) downloadAndCache(node *Node) error {
 	v.dlSem <- struct{}{}
 	defer func() { <-v.dlSem }()
 
-	mlog.Debugf("vfs: downloading %s (%d bytes)", node.RemotePath, node.Size)
+	mlog.Debugf("vfs: downloading inode %d (%d bytes)", node.ID, node.Size)
 
 	fetcher := transfer.Fetcher{
 		Client: v.Client,
@@ -973,7 +1057,16 @@ func (v *VFS) AttachChild(parent, child *Node) {
 
 func (v *VFS) DetachChild(parent *Node, name string) {
 	if child := parent.RemoveChild(name); child != nil {
-		v.untrackNode(child)
+		v.untrackTree(child)
+	}
+}
+
+func (v *VFS) untrackTree(node *Node) {
+	v.untrackNode(node)
+	if node.IsDir {
+		for _, child := range node.ListChildren() {
+			v.untrackTree(child)
+		}
 	}
 }
 
@@ -1040,10 +1133,11 @@ func nodeToInode(node *Node, parentID int64) *cache.Inode {
 		ParentID:     parentID,
 		SyncStatus:   node.SyncStatus,
 		StatusReason: node.StatusReason,
+		NodeID:       node.NodeID,
 	}
 }
 
-func joinPath(parent, child string) string {
+func JoinPath(parent, child string) string {
 	if parent == "" {
 		return child
 	}

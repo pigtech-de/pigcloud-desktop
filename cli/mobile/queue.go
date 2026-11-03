@@ -25,30 +25,6 @@ const (
 	ErrorClassUnauthorized = "unauthorized"
 )
 
-var shedCodes = map[string]bool{
-	"scanner_busy":            true,
-	"too_many_concurrent":     true,
-	"reservation_unavailable": true,
-	"finalize_in_progress":    true,
-	"scan_pending":            true,
-}
-
-var permanentCodes = map[string]bool{
-	"file_too_large":           true,
-	"chunk_too_large":          true,
-	"file_malformed":           true,
-	"scan_rejected":            true,
-	"sanitize_failed":          true,
-	"e2ee_required":            true,
-	"invalid_signature":        true,
-	"invalid_upload_dir":       true,
-	"duplicate":                true,
-	"shared_not_found":         true,
-	"shared_edit_permission":   true,
-	"shared_owner_key_missing": true,
-	"shared_grant_revoked":     true,
-}
-
 type badInputError struct{ error }
 
 func (e badInputError) Unwrap() error { return e.error }
@@ -78,9 +54,11 @@ func classifyUpload(err error) classified {
 		return classified{}
 	}
 	result := classified{retryAfter: api.RetryAfterHint(err)}
+	var serverClass string
 	var apiErr *api.APIError
 	if errors.As(err, &apiErr) {
 		result.code = apiErr.Code
+		serverClass = apiErr.Class
 	}
 	var reqErr *api.RequestError
 	hasReq := errors.As(err, &reqErr)
@@ -91,17 +69,11 @@ func classifyUpload(err error) classified {
 		result.class = ErrorClassCancelled
 	case errors.As(err, &badInput):
 		result.class = ErrorClassPermanent
-	case result.code == "storage_limit":
-		result.class = ErrorClassQuota
-	case result.code == "daily_limit":
-		result.class = ErrorClassDailyLimit
-	case result.code == "rate_limited":
-		result.class = ErrorClassRateLimited
+	case serverClass == ErrorClassRateLimited:
+		result.class = serverClass
 		result.retryAfter = scanBudgetRetryAfter(err, result.retryAfter)
-	case shedCodes[result.code]:
-		result.class = ErrorClassShed
-	case permanentCodes[result.code]:
-		result.class = ErrorClassPermanent
+	case serverClass != "":
+		result.class = serverClass
 	case hasReq && (reqErr.StatusCode == http.StatusUnauthorized || reqErr.StatusCode == http.StatusForbidden):
 		result.class = ErrorClassUnauthorized
 	case hasReq && (reqErr.Kind == api.KindRateLimited || reqErr.StatusCode == http.StatusServiceUnavailable):
@@ -122,7 +94,7 @@ func refusalError(resp *api.Response, message string) error {
 	return &api.RequestError{
 		Kind:       api.KindPermanent,
 		StatusCode: resp.StatusCode,
-		Err:        &api.APIError{Code: resp.ErrorCode, Message: message},
+		Err:        &api.APIError{Code: resp.ErrorCode, Class: resp.ErrorClass, Message: message},
 	}
 }
 
@@ -137,10 +109,14 @@ func uploadedNodeID(raw []byte) string {
 	if json.Unmarshal(raw, &ids) != nil {
 		return ""
 	}
-	if ids.NodeID != "" {
-		return ids.NodeID
+	id := ids.NodeID
+	if id == "" {
+		id = ids.NodeIDWire
 	}
-	return ids.NodeIDWire
+	if !e2ee.IsNodeIDHex(id) {
+		return ""
+	}
+	return strings.ToLower(id)
 }
 
 const folderTimeout = 60 * time.Second
@@ -162,26 +138,20 @@ func (s *Session) EnsureFolder(remoteDir string) (out string, err error) {
 	if dir == "/" {
 		return encodeJSON(folderResult{OK: true})
 	}
-	var segments []string
 	for _, segment := range strings.Split(strings.Trim(dir, "/"), "/") {
 		if err := validFileName(segment); err != nil {
 			return "", err
 		}
-		segments = append(segments, segment)
 	}
 
-	options := map[string]string{"source": dir, "parents": "true"}
-	if err := s.keys.AddE2eeNameFieldsForMkParents(options, segments); err != nil {
-		return "", err
+	parentKey, err := s.keys.ParentKey()
+	if err != nil {
+		return encodeJSON(folderResult{Message: err.Error(), ErrorClass: classifyUpload(err).class})
 	}
-	if err := s.keys.AddPathTokensFor(options, dir, e2ee.SelfAndParent); err != nil {
-		return "", err
-	}
-
 	ctx, cancel := context.WithTimeout(context.Background(), folderTimeout)
 	defer cancel()
-	resp, callErr := api.NewClient().Execute(ctx, "mk", options)
-	return encodeJSON(decideFolder(resp, callErr))
+	chain, callErr := s.keys.EnsureFolderChain(ctx, api.NewClient(), dir, parentKey)
+	return encodeJSON(decideFolder(chain.Resp, callErr))
 }
 
 func decideFolder(resp *api.Response, callErr error) folderResult {

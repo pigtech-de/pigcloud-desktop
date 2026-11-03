@@ -32,6 +32,10 @@ func NewAccountKeys(password []byte) (*AccountKeys, error) {
 	}
 	recovered, err := crypto.EncryptHybridPrivateKeyWithKey(priv, recoveryKey)
 	if err != nil {
+		return nil, fmt.Errorf("recovery-wrap private key: %w", err)
+	}
+	viewCT, viewNonce, err := crypto.EncryptWithKey(recoveryKey, priv.X25519[:])
+	if err != nil {
 		return nil, fmt.Errorf("wrap recovery key: %w", err)
 	}
 
@@ -63,8 +67,10 @@ func NewAccountKeys(password []byte) (*AccountKeys, error) {
 		"kdf_salt":                             b64(enc.Salt),
 		"kdf_ops_limit":                        fmt.Sprintf("%d", enc.OpsLimit),
 		"kdf_mem_limit":                        fmt.Sprintf("%d", enc.MemLimit),
-		"recovery_encrypted_key":               b64(recovered.X25519Ciphertext),
-		"recovery_key_nonce":                   b64(recovered.X25519Nonce),
+		"recovery_encrypted_key":               b64(viewCT),
+		"recovery_key_nonce":                   b64(viewNonce),
+		"recovery_private_key_encrypted":       b64(recovered.X25519Ciphertext),
+		"recovery_private_key_nonce":           b64(recovered.X25519Nonce),
 		"recovery_private_key_kyber_encrypted": b64(recovered.KyberCiphertext),
 		"recovery_private_key_kyber_nonce":     b64(recovered.KyberNonce),
 

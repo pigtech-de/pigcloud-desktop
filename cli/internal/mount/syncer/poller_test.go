@@ -66,6 +66,7 @@ type remoteEntry struct {
 	modified  time.Time
 	haveMtime bool
 	etag      string
+	id        string
 }
 
 func sealedName(t *testing.T, pub *crypto.PublicKeySet, name string) string {
@@ -81,7 +82,7 @@ func lsJSON(t *testing.T, pub *crypto.PublicKeySet, entries []remoteEntry) strin
 	t.Helper()
 	out := make([]api.ListEntry, 0, len(entries))
 	for _, e := range entries {
-		le := api.ListEntry{Type: "file", E2EEDisplayName: sealedName(t, pub, e.name), ETag: e.etag}
+		le := api.ListEntry{Type: "file", E2EEDisplayName: sealedName(t, pub, e.name), ETag: e.etag, ID: e.id}
 		if e.isDir {
 			le.Type = "directory"
 		}

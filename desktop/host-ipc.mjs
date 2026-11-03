@@ -2,6 +2,8 @@ import {realpath, stat} from 'node:fs/promises';
 import {resolve} from 'node:path';
 import {IPC_PREFIX, requireTrustedSender, requireObject} from './host-policy.mjs';
 
+export const NATIVE_FAILURE = '__pigcloudNativeFailure';
+
 export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capabilities, openCloud, openUpdates, openAccountSettings, login, loginCli, cancelLoginCli, shell, updates, reportAppearance, currentAppearance = () => null, t = key => key, inspectPath = realpath, inspectStat = stat}) {
     const channels = [];
     const folders = new Set();
@@ -12,7 +14,12 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
         channels.push(channel);
         ipcMain.handle(channel, async (event, value) => {
             guard(event);
-            return operation(value, event);
+            try {
+                return await operation(value, event);
+            } catch (error) {
+                if (typeof error?.code === 'string' && /^[A-Za-z]{1,40}$/u.test(error.code)) return {[NATIVE_FAILURE]: error.code};
+                throw error;
+            }
         });
     };
     add('getSettings', () => engine.getSettings());
@@ -23,7 +30,7 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
     const shapes = {
         start: ['pairId'], stop: ['pairId'], unlock: ['password'], files: ['pairId'],
         activity: ['pairId'], conflicts: ['pairId'], resolve: ['pairId', 'path', 'choice'],
-        retry: ['pairId', 'path'], flush: ['pairId'],
+        retry: ['pairId', 'path'], flush: ['pairId'], release: ['pairId', 'choice'],
     };
     for (const [name, shape] of Object.entries(shapes)) {
         add(name, value => engine[name](requireObject(value ?? {}, shape)));
@@ -100,7 +107,7 @@ export function registerSyncIpc({ipcMain, contents, engine, dialog, window, capa
     }
     add('openAccountSettings', () => openAccountSettings());
     add('login', () => login());
-    add('loginCli', () => loginCli());
+    add('loginCli', value => loginCli({replace: requireObject(value ?? {}, ['replace']).replace === true}));
     add('cancelLoginCli', () => cancelLoginCli());
     return () => {
         folders.clear();

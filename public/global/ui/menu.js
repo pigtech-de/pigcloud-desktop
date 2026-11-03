@@ -95,6 +95,8 @@ window.PigcloudMenu = (() => {
         const painted = cfg.scrim !== false;
         const ownsOpenerPaint = cfg.toggleIcon !== false;
         const openerLit = cfg.openerLit === undefined ? ownsOpenerPaint : cfg.openerLit === true;
+        const liftEl = cfg.lift instanceof Element ? cfg.lift : opener;
+        const lifts = openerLit || liftEl !== opener;
         const closeOnSelect = cfg.closeOnSelect !== false;
         const closeOnTab = cfg.closeOnTab !== false;
         const sheetAllowed = cfg.sheet !== false;
@@ -203,7 +205,7 @@ window.PigcloudMenu = (() => {
             const at = resolvePlacement();
             if (at === 'skin') restoreGeometry();
             else placeSurface(opener, surface, at, offset);
-            if (openerLit && ownsScrimHole()) cutScrimHole(scrimEl, opener);
+            if (lifts && ownsScrimHole()) cutScrimHole(scrimEl, liftEl);
         }
 
         function warnIfInvisible() {
@@ -363,7 +365,7 @@ window.PigcloudMenu = (() => {
             unbindOpen();
             if (scrimEl) {
                 scrimEl.removeEventListener('click', onScrimClick);
-                if (openerLit && ownedHole) scrimEl.style.clipPath = '';
+                if (lifts && ownedHole) scrimEl.style.clipPath = '';
             }
             if (isShown(surface)) surface.hidePopover();
             hideScrim(controller);
@@ -459,5 +461,5 @@ window.PigcloudMenu = (() => {
 
     window.addEventListener('popstate', handleBack);
 
-    return {attach, handleBack};
+    return {attach, handleBack, cutScrimHole};
 })();

@@ -1,6 +1,7 @@
 (() => {
     'use strict';
     const stack = [];
+    const redo = [];
     let baseUrlFn = null;
     let restoreStateFn = null;
     function setBaseUrlProvider(urlFn, stateFn) {
@@ -16,26 +17,104 @@
     function routeUrl(route) {
         return location.pathname + location.search + '#!' + route;
     }
+    function onModalEntry() {
+        return !!(history.state && history.state.modal);
+    }
+    function ownsEntry() {
+        return onModalEntry() && stack.length > 0;
+    }
+    function topModal() {
+        return stack.length ? stack[stack.length - 1].modal : null;
+    }
+    function isForward(state) {
+        const target = state && state.modal;
+        return !!target && redo.length > 0 && redo[redo.length - 1].modal === target && topModal() !== target;
+    }
+    let traverse = null;
+    function isDeadEntry(state) {
+        const modal = state && state.modal;
+        return !!modal && !stack.some(entry => entry.modal === modal);
+    }
+    function startTraverse(deliver) {
+        traverse = {deliver};
+        history.back();
+    }
+    window.addEventListener('popstate', (e) => {
+        if (traverse) {
+            const dead = isDeadEntry(e.state);
+            if (dead || !traverse.deliver) e.stopImmediatePropagation();
+            if (dead) history.back();
+            else traverse = null;
+            return;
+        }
+        if (isDeadEntry(e.state) && !isForward(e.state)) {
+            e.stopImmediatePropagation();
+            startTraverse(true);
+        }
+    });
     function push(modal, manageHistory = true, route = null) {
         if (!manageHistory) return;
-        stack.push({state: history.state || restoreState(), url: baseUrl()});
-        if (stack.length > 50) stack.shift();
-        history.pushState({modal}, '', route ? routeUrl(route) : undefined);
-    }
-    function pop(skipHistory = false) {
-        const prev = stack.pop();
-        if (skipHistory) return;
-        if (history.state && history.state.modal) {
-            const entry = prev !== undefined ? prev : {state: restoreState(), url: baseUrl()};
-            history.replaceState(entry.state, '', entry.url);
+        if (isForward(history.state) && history.state.modal === modal) {
+            stack.push(redo.pop());
+            if (route) history.replaceState(history.state, '', routeUrl(route));
+            return;
         }
+        redo.length = 0;
+        const stale = onModalEntry() && !ownsEntry();
+        stack.push(ownsEntry()
+            ? {modal, state: history.state, url: location.pathname + location.search + location.hash}
+            : {modal, state: null, url: null});
+        if (stack.length > 50) stack.shift();
+        const state = {modal};
+        const url = route ? routeUrl(route) : undefined;
+        if (stale) history.replaceState(state, '', url);
+        else history.pushState(state, '', url);
+    }
+    function pop(skipHistory = false, modal = null) {
+        if (modal) {
+            let index = stack.length - 1;
+            while (index >= 0 && stack[index].modal !== modal) index--;
+            if (index === -1) return;
+            if (index !== stack.length - 1) {
+                stack[index + 1].state = stack[index].state;
+                stack[index + 1].url = stack[index].url;
+                stack.splice(index, 1);
+                return;
+            }
+        }
+        const prev = stack.pop();
+        if (skipHistory) {
+            if (prev) redo.push(prev);
+            if (redo.length > 50) redo.shift();
+            if (prev && isDeadEntry(history.state)) startTraverse(false);
+            return;
+        }
+        if (onModalEntry()) {
+            history.replaceState(prev && prev.state ? prev.state : restoreState(), '', prev && prev.url ? prev.url : baseUrl());
+        }
+    }
+    function popThrough(modal, skipHistory = false) {
+        let index = stack.length - 1;
+        while (index >= 0 && stack[index].modal !== modal) index--;
+        const above = index < 0 ? 0 : stack.length - 1 - index;
+        if (above === 0 || skipHistory || !onModalEntry()) {
+            if (index >= 0) stack.length = index + 1;
+            pop(skipHistory);
+            return;
+        }
+        const ownUrl = stack[index + 1].url;
+        stack.length = index + 1;
+        if (ownUrl) history.replaceState(history.state, '', ownUrl);
+        window.addEventListener('popstate', () => pop(false), {once: true});
+        history.go(-above);
     }
     function reflect(route) {
-        if (history.state && history.state.modal) {
-            history.replaceState(history.state, '', routeUrl(route));
+        if (ownsEntry()) {
+            const below = stack[stack.length - 1].url;
+            history.replaceState(history.state, '', route ? routeUrl(route) : (below || baseUrl()));
         }
     }
-    window.PigcloudModalHistory = {push, pop, reflect, setBaseUrlProvider};
+    window.PigcloudModalHistory = {push, pop, popThrough, reflect, setBaseUrlProvider, ownsEntry, isForward, topModal};
     window.pushModalState = push;
     window.popModalState = pop;
 })();

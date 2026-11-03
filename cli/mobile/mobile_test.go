@@ -197,6 +197,9 @@ func TestSelfTestRunsTheEmbeddedVectors(t *testing.T) {
 func scannerOffServer(t *testing.T) {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answersIn(w, r) {
+			return
+		}
 		if r.URL.Query().Get("action") == "tee-attestation" {
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"success":true,"enabled":false,"available":false}`)
@@ -290,6 +293,9 @@ func TestASpentScanBudgetHandsTheHostTheServersWait(t *testing.T) {
 		t.Fatalf("Unlock: %v", err)
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if answersIn(w, r) {
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Query().Get("action") == "tee-attestation" {
 			fmt.Fprint(w, `{"success":true,"enabled":false,"available":false}`)
@@ -297,7 +303,7 @@ func TestASpentScanBudgetHandsTheHostTheServersWait(t *testing.T) {
 		}
 		w.Header().Set("Retry-After", "3000")
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"success":false,"errorCode":"rate_limited","retryAfter":3000,"bucket":"tee_scan","message":"Hourly upload limit reached."}`)
+		fmt.Fprint(w, `{"success":false,"errorCode":"rate_limited","errorClass":"rate_limited","retryAfter":3000,"bucket":"tee_scan","message":"Hourly upload limit reached."}`)
 	}))
 	t.Cleanup(srv.Close)
 	config.Get().Endpoint = srv.URL + "/cloud/actions.php"

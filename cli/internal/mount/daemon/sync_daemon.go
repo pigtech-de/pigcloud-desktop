@@ -62,7 +62,7 @@ func ServeSync(cfg *Config) error {
 		mlog.SetOutput(lf)
 		defer lf.Close()
 	}
-	mlog.Infof("sync daemon starting: remote=%s mountpoint=%s level=%s", cfg.RemotePath, cfg.MountPoint, mlog.CurrentLevel())
+	mlog.Infof("sync daemon starting: level=%s", mlog.CurrentLevel())
 
 	defer mlog.RecoverPanic("sync daemon")
 
@@ -178,7 +178,7 @@ func ServeSync(cfg *Config) error {
 	}()
 
 	if err := downloader.InitialSync(syncCtx); err != nil {
-		mlog.Warnf("sync daemon: initial sync error (continuing): %v", err)
+		mlog.Warnf("sync daemon: initial sync error (continuing): %s", mlog.Cause(err))
 	}
 	syncCancel()
 	close(sd.initialSyncDone)
@@ -192,7 +192,7 @@ func ServeSync(cfg *Config) error {
 		}
 		rt.writeback.Start()
 		if err := watcher.Start(); err != nil {
-			mlog.Errorf("sync daemon: watcher start error: %v", err)
+			mlog.Errorf("sync daemon: watcher start error (%s)", mlog.Cause(err))
 		}
 		reconciler.Start()
 	})
@@ -204,8 +204,7 @@ func ServeSync(cfg *Config) error {
 		return nil
 	}
 
-	mlog.Infof("sync daemon ready: pid=%d port=%d mountpoint=%s syncdir=%s",
-		os.Getpid(), port, cfg.MountPoint, syncDir)
+	mlog.Infof("sync daemon ready: pid=%d port=%d", os.Getpid(), port)
 
 	<-sd.shutdownCh
 
@@ -238,6 +237,12 @@ func (sd *SyncDaemon) handleExtra(req mount.DaemonRequest, enc *json.Encoder) bo
 		} else {
 			enc.Encode(mount.DaemonResponse{OK: true})
 		}
+	case "release":
+		if n, err := syncer.ReleaseHeldDeletes(sd.cacheDB, sd.vfs, req.Choice); err != nil {
+			enc.Encode(mount.DaemonResponse{OK: false, Error: err.Error()})
+		} else {
+			enc.Encode(mount.DaemonResponse{OK: true, Retried: n})
+		}
 	case "files":
 		sd.handleFiles(enc)
 	case "conflicts":
@@ -261,7 +266,7 @@ func (sd *SyncDaemon) retryFailed(remotePath string) (int, error) {
 			sd.cacheDB.SetSyncStatus(in.ID, cache.StatusPending, "")
 			if err := sd.cacheDB.EnqueueWriteback(in.ID, "upload", in.RemotePath, ""); err != nil &&
 				!errors.Is(err, cache.ErrReadOnlyMount) {
-				mlog.Warnf("retry: re-enqueue %s: %v", in.RemotePath, err)
+				mlog.Warnf("retry: re-enqueue inode %d failed (%s)", in.ID, mlog.Cause(err))
 			}
 			if node != nil {
 				node.Mu.Lock()
@@ -311,7 +316,7 @@ func (sd *SyncDaemon) resolveConflict(remotePath, choice string) error {
 			return fmt.Errorf("unsafe path: %s", remotePath)
 		}
 		sd.downloader.SuppressPath(localPath, 5*time.Second)
-		if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+		if err := sd.downloader.TrashLocal(remotePath); err != nil {
 			return err
 		}
 		sd.cacheDB.DeleteWritebackByInode(inode.ID)
@@ -369,37 +374,20 @@ func conflictCopyPath(path string) string {
 }
 
 func (sd *SyncDaemon) handleStatus(enc *json.Encoder) {
-	cacheUsed := cache.CacheBytes(sd.cacheDB, sd.store)
-	pending, _ := sd.cacheDB.PendingWritebackCount()
-	failed, _ := sd.cacheDB.FailedWritebackCount()
-	failedDownloads, _ := sd.cacheDB.FailedDownloadCount()
-	deferred, nextDue := deferredQueue(sd.cacheDB)
-
-	lastPoll := sd.poller.LastPoll()
-	lastPollStr := ""
-	if !lastPoll.IsZero() {
-		lastPollStr = fmt.Sprintf("%ds ago", int(time.Since(lastPoll).Seconds()))
+	resp := statusBase(sd.cacheDB, sd.store, sd.poller, sd.startedAt)
+	resp.MountPoint = sd.mountPoint
+	resp.RemotePath = "/" + sd.remotePath
+	resp.Mode = mount.ModeSync
+	resp.SyncDir = sd.syncDir
+	resp.CacheMax = sd.cacheMax
+	resp.FailedDownloadCount, _ = sd.cacheDB.FailedDownloadCount()
+	resp.MassDeleteHeld = sd.cacheDB.MassDeleteHeld()
+	if sd.watcher != nil {
+		if started, ok, category := sd.watcher.Health(); started && !ok {
+			resp.WatcherDegraded, resp.WatcherError = true, category
+		}
 	}
-
-	uptime := time.Since(sd.startedAt).Round(time.Second).String()
-
-	enc.Encode(mount.DaemonResponse{
-		OK:                  true,
-		Online:              sd.poller.IsOnline(),
-		MountPoint:          sd.mountPoint,
-		RemotePath:          "/" + sd.remotePath,
-		Mode:                mount.ModeSync,
-		SyncDir:             sd.syncDir,
-		CacheUsed:           cacheUsed,
-		CacheMax:            sd.cacheMax,
-		PendingCount:        pending,
-		FailedCount:         failed,
-		FailedDownloadCount: failedDownloads,
-		DeferredCount:       deferred,
-		NextDueSeconds:      nextDue,
-		LastPoll:            lastPollStr,
-		Uptime:              uptime,
-	})
+	enc.Encode(resp)
 }
 
 func (sd *SyncDaemon) wireActivity() {
@@ -449,8 +437,10 @@ func fileEntryFromInode(in *cache.Inode) mount.FileEntry {
 	}
 }
 
+const filesFeedLimit = 1000
+
 func buildFileEntries(db *cache.DB) ([]mount.FileEntry, error) {
-	inodes, err := db.AllInodes()
+	inodes, err := db.ListUnsynced(filesFeedLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -500,7 +490,7 @@ func (sd *SyncDaemon) shutdown() {
 		sd.poller.Stop()
 
 		if err := sd.mapper.Unmap(sd.mountPoint); err != nil {
-			mlog.Warnf("sync daemon: unmap warning: %v", err)
+			mlog.Warnf("sync daemon: unmap warning (%s)", mlog.Cause(err))
 		}
 
 		sd.cleanup()

@@ -10,6 +10,9 @@ var rawJSON []byte
 
 type extEntry struct {
 	Type string `json:"type"`
+	Cap  struct {
+		Edit string `json:"edit"`
+	} `json:"cap"`
 }
 
 type registry struct {
@@ -17,6 +20,7 @@ type registry struct {
 }
 
 var typeMap map[string]string
+var plainText map[string]bool
 
 func init() {
 	var reg registry
@@ -24,8 +28,12 @@ func init() {
 		panic("filetypes: failed to parse embedded file-types.json: " + err.Error())
 	}
 	typeMap = make(map[string]string, len(reg.Extensions))
+	plainText = make(map[string]bool)
 	for ext, entry := range reg.Extensions {
 		typeMap[ext] = entry.Type
+		if entry.Cap.Edit == "native" {
+			plainText[ext] = true
+		}
 	}
 }
 
@@ -36,8 +44,8 @@ func TypeOf(ext string) string {
 	return "other"
 }
 
-func IsText(ext string) bool {
-	return TypeOf(ext) == "text"
+func IsPlainText(ext string) bool {
+	return plainText[ext]
 }
 
 func Extensions() []string {

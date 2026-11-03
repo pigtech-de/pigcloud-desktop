@@ -7,9 +7,6 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
-	"github.com/spf13/pflag"
 )
 
 const phpCommandDir = "../../private/cli/commands"
@@ -158,118 +155,5 @@ func TestFindLocalCommandListsNothingCobraDoesNotRegister(t *testing.T) {
 		if findLocalCommand(name) == nil {
 			t.Errorf("findLocalCommand(%q) = nil despite the clientOnly entry", name)
 		}
-	}
-}
-
-func TestVisibleSubcommandsHidesHiddenOnes(t *testing.T) {
-	parent := &cobra.Command{Use: "parent"}
-	shown := &cobra.Command{Use: "shown"}
-	hidden := &cobra.Command{Use: "hidden", Hidden: true}
-	parent.AddCommand(shown, hidden)
-
-	got := visibleSubcommands(parent)
-	if len(got) != 1 || got[0].Name() != "shown" {
-		names := make([]string, 0, len(got))
-		for _, c := range got {
-			names = append(names, c.Name())
-		}
-		t.Fatalf("visibleSubcommands = %v, want [shown]", names)
-	}
-	if got := visibleSubcommands(&cobra.Command{Use: "leaf"}); len(got) != 0 {
-		t.Errorf("a leaf command has no subcommands, got %d", len(got))
-	}
-}
-
-func TestVisibleSubcommandsMatchesTheRegisteredTree(t *testing.T) {
-	var mn *cobra.Command
-	for _, cmd := range rootCmd.Commands() {
-		if cmd.Name() == "mn" {
-			mn = cmd
-			break
-		}
-	}
-	if mn == nil {
-		t.Fatal("mn is no longer registered")
-	}
-
-	want := 0
-	for _, sub := range mn.Commands() {
-		if !sub.Hidden {
-			want++
-		}
-	}
-	if want < 5 {
-		t.Fatalf("mn exposes only %d visible subcommands; the walk broke", want)
-	}
-	if got := len(visibleSubcommands(mn)); got != want {
-		t.Errorf("visibleSubcommands(mn) = %d, want %d", got, want)
-	}
-}
-
-func TestBuildFlagHintsPrefersShorthandsAndSkipsHelp(t *testing.T) {
-	cmd := &cobra.Command{Use: "x"}
-	cmd.Flags().BoolP("all", "a", false, "")
-	cmd.Flags().String("skip-existing", "", "")
-	cmd.Flags().BoolP("secret", "s", false, "")
-	if err := cmd.Flags().MarkHidden("secret"); err != nil {
-		t.Fatalf("mark hidden: %v", err)
-	}
-	cmd.InitDefaultHelpFlag()
-
-	got := buildFlagHints(cmd)
-	if !strings.Contains(got, "[-a]") {
-		t.Errorf("hints = %q, want the -a shorthand", got)
-	}
-	if !strings.Contains(got, "[--skip-existing]") {
-		t.Errorf("hints = %q, a shorthand-less flag must fall back to its long name", got)
-	}
-	if strings.Contains(got, "[--all]") {
-		t.Errorf("hints = %q, a flag with a shorthand must not also print its long name", got)
-	}
-	if strings.Contains(got, "secret") {
-		t.Errorf("hints = %q, hidden flags must stay out of the usage line", got)
-	}
-	if strings.Contains(got, "help") || strings.Contains(got, "[-h]") {
-		t.Errorf("hints = %q, --help must be filtered", got)
-	}
-}
-
-func TestBuildFlagHintsIsEmptyForAFlaglessCommand(t *testing.T) {
-	cmd := &cobra.Command{Use: "x"}
-	cmd.InitDefaultHelpFlag()
-	if got := buildFlagHints(cmd); got != "" {
-		t.Errorf("buildFlagHints = %q, want empty", got)
-	}
-}
-
-func TestBuildFlagHintsCoversEveryVisibleLocalFlag(t *testing.T) {
-	var ls *cobra.Command
-	for _, cmd := range rootCmd.Commands() {
-		if cmd.Name() == "ls" {
-			ls = cmd
-			break
-		}
-	}
-	if ls == nil {
-		t.Fatal("ls is no longer registered")
-	}
-
-	got := buildFlagHints(ls)
-	checked := 0
-	ls.LocalFlags().VisitAll(func(f *pflag.Flag) {
-		if f.Hidden || f.Name == "help" {
-			return
-		}
-		checked++
-		token := "[--" + f.Name + "]"
-		if f.Shorthand != "" {
-			token = "[-" + f.Shorthand + "]"
-		}
-		if !strings.Contains(got, token) {
-			t.Errorf("%s missing from %q", token, got)
-		}
-	})
-	if checked < 5 {
-		t.Fatalf("only %d flags walked on ls; the check is near-vacuous", checked)
 	}
 }

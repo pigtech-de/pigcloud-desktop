@@ -366,7 +366,7 @@ func encryptChatMessage(ctx context.Context, recipientUsername, plaintext string
 		ExitWithError()
 	}
 
-	ciphertext, nonce, err := crypto.EncryptMessage([]byte(plaintext), dataKey)
+	ciphertext, nonce, err := crypto.EncryptWithKey([]byte(plaintext), dataKey)
 	if err != nil {
 		output.PrintError("Failed to encrypt message: " + err.Error())
 		ExitWithError()
@@ -422,7 +422,7 @@ func decryptChatMessage(msg api.ChatMessage, priv *crypto.PrivateKeySet, current
 		return "[decryption failed: invalid nonce]"
 	}
 
-	plaintext, err := crypto.DecryptMessage(ciphertext, nonce, dataKey)
+	plaintext, err := crypto.DecryptWithKey(ciphertext, nonce, dataKey)
 	if err != nil {
 		return "[decryption failed]"
 	}

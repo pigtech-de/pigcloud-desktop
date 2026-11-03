@@ -7,6 +7,7 @@ window.PigcloudDialogManager = {
     cancelBtn: null,
     resolvePromise: null,
     mode: 'alert',
+    nameField: null,
     initialized: false,
     _lastFocusedElement: null,
 
@@ -83,6 +84,7 @@ window.PigcloudDialogManager = {
             }
         });
         this._boundKeydown = (e) => {
+            if (e.timeStamp < this._openedAt) return;
             if (e.key === 'Escape') {
                 e.preventDefault();
                 this.handleCancel();
@@ -123,10 +125,14 @@ window.PigcloudDialogManager = {
         this.titleEl.textContent = title;
         this.messageEl.textContent = message;
 
+        this.detachNameField();
         if (this.mode === 'prompt') {
             this.inputEl.hidden = false;
             this.inputEl.type = options.inputType || 'text';
             this.inputEl.value = options.defaultValue || '';
+            if (options.nameRule && window.PigcloudNameRule) {
+                this.nameField = window.PigcloudNameRule.attach(this.inputEl, options.nameRule, this.confirmBtn);
+            }
         } else {
             this.inputEl.hidden = true;
             this.inputEl.type = 'text';
@@ -170,6 +176,7 @@ window.PigcloudDialogManager = {
         this.cancelBtn.hidden = this.mode === 'alert';
         this._lastFocusedElement = document.activeElement instanceof HTMLElement ? document.activeElement : null;
         this.modal.style.display = 'flex';
+        this._openedAt = performance.now();
         document.addEventListener('keydown', this._boundKeydown);
 
         if (typeof window.lockBodyScroll === 'function') {
@@ -190,7 +197,13 @@ window.PigcloudDialogManager = {
         });
     },
 
+    detachNameField() {
+        if (this.nameField) this.nameField.detach();
+        this.nameField = null;
+    },
+
     handleConfirm() {
+        if (this.nameField && !this.nameField.valid()) return;
         const result = this.mode === 'prompt' ? this.inputEl.value : true;
         this.close();
         if (this.resolvePromise) {
@@ -218,6 +231,7 @@ window.PigcloudDialogManager = {
 
     close() {
         document.removeEventListener('keydown', this._boundKeydown);
+        this.detachNameField();
         if (this.modal) {
             this.modal.style.display = 'none';
         }

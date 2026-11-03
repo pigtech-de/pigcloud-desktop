@@ -144,6 +144,10 @@ func getConfigPath() string {
 }
 
 func PathFor(name string) string {
+	return filepath.Join(DefaultDir(), name)
+}
+
+func DefaultDir() string {
 	var configDir string
 	if runtime.GOOS == "windows" {
 		configDir = os.Getenv("APPDATA")
@@ -158,7 +162,7 @@ func PathFor(name string) string {
 		}
 	}
 
-	return filepath.Join(configDir, "pigcloud", name)
+	return filepath.Join(configDir, "pigcloud")
 }
 
 func Dir() string {
@@ -277,12 +281,7 @@ func SetEncryptionKeys(
 	ops, mem uint32,
 ) error {
 	c := Get()
-	c.PublicKey = publicKey
-	c.EncryptedPrivateKey = encPrivKey
-	c.PrivateKeyNonce = nonce
-	c.PublicKeyKyber = publicKeyKyber
-	c.EncryptedPrivateKeyKyber = encPrivKeyKyber
-	c.PrivateKeyKyberNonce = kyberNonce
+	c.applyEncryptionKeys(publicKey, encPrivKey, nonce, publicKeyKyber, encPrivKeyKyber, kyberNonce)
 	c.KDFSalt = salt
 	c.KDFOpsLimit = ops
 	c.KDFMemLimit = mem
@@ -294,14 +293,26 @@ func SetSigningKeys(
 	pubEd, encPrivEd, edNonce string,
 	pubMldsa, encPrivMldsa, mldsaNonce string,
 ) error {
-	c := Get()
+	Get().applySigningKeys(pubEd, encPrivEd, edNonce, pubMldsa, encPrivMldsa, mldsaNonce)
+	return Save()
+}
+
+func (c *Config) applyEncryptionKeys(publicKey, encPrivKey, nonce, publicKeyKyber, encPrivKeyKyber, kyberNonce string) {
+	c.PublicKey = publicKey
+	c.EncryptedPrivateKey = encPrivKey
+	c.PrivateKeyNonce = nonce
+	c.PublicKeyKyber = publicKeyKyber
+	c.EncryptedPrivateKeyKyber = encPrivKeyKyber
+	c.PrivateKeyKyberNonce = kyberNonce
+}
+
+func (c *Config) applySigningKeys(pubEd, encPrivEd, edNonce, pubMldsa, encPrivMldsa, mldsaNonce string) {
 	c.SigningPublicKeyEd25519 = pubEd
 	c.EncryptedSigningPrivateKeyEd25519 = encPrivEd
 	c.SigningPrivateKeyEd25519Nonce = edNonce
 	c.SigningPublicKeyMldsa = pubMldsa
 	c.EncryptedSigningPrivateKeyMldsa = encPrivMldsa
 	c.SigningPrivateKeyMldsaNonce = mldsaNonce
-	return Save()
 }
 
 func StoreE2EEDeviceKey(deviceKey []byte) bool {
@@ -323,18 +334,8 @@ func SetDeviceWrappedE2EEKeys(
 	pubMldsa, encPrivMldsa, mldsaNonce string,
 ) error {
 	c := Get()
-	c.PublicKey = publicKey
-	c.EncryptedPrivateKey = encPrivKey
-	c.PrivateKeyNonce = nonce
-	c.PublicKeyKyber = publicKeyKyber
-	c.EncryptedPrivateKeyKyber = encPrivKeyKyber
-	c.PrivateKeyKyberNonce = kyberNonce
-	c.SigningPublicKeyEd25519 = pubEd
-	c.EncryptedSigningPrivateKeyEd25519 = encPrivEd
-	c.SigningPrivateKeyEd25519Nonce = edNonce
-	c.SigningPublicKeyMldsa = pubMldsa
-	c.EncryptedSigningPrivateKeyMldsa = encPrivMldsa
-	c.SigningPrivateKeyMldsaNonce = mldsaNonce
+	c.applyEncryptionKeys(publicKey, encPrivKey, nonce, publicKeyKyber, encPrivKeyKyber, kyberNonce)
+	c.applySigningKeys(pubEd, encPrivEd, edNonce, pubMldsa, encPrivMldsa, mldsaNonce)
 	c.KDFSalt = ""
 	c.KDFOpsLimit = 0
 	c.KDFMemLimit = 0

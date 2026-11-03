@@ -85,7 +85,7 @@ func TestVFSRefreshPreservesDirtyVersionConflictBeforePollerRuns(t *testing.T) {
 			t.Fatal(err)
 		}
 		reloaded := restarted.Root.GetChild("notes.txt")
-		if reloaded == nil || reloaded.Etag != "v1" || !reloaded.Dirty || reloaded.SyncStatus != cache.StatusConflict {
+		if reloaded == nil || reloaded.Etag != "v2" || !reloaded.Dirty || reloaded.SyncStatus != cache.StatusConflict {
 			t.Fatalf("cold VFS load erased persisted version conflict: %+v", reloaded)
 		}
 		writer := NewWritebackProcessor(restarted, p.client, db, nil, "")

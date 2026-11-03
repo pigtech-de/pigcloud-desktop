@@ -38,14 +38,17 @@ type Inode struct {
 	Pinned      bool
 	LastAccess  int64
 	ContentHash string
-	LocalHash    string
-	LocalMtime   int64
-	SealedKey    string
-	EncMeta      string
-	Etag         string
-	ParentID     int64
-	SyncStatus   SyncStatus
-	StatusReason string
+	LocalHash     string
+	LocalMtime    int64
+	SealedKey     string
+	EncMeta       string
+	Etag          string
+	ParentID      int64
+	SyncStatus    SyncStatus
+	StatusReason  string
+	NodeID        string
+	PendingNodeID string
+	LocalFileID   string
 }
 
 const (
@@ -81,6 +84,10 @@ type DB struct {
 	writeMu sync.Mutex
 	closed  bool
 	writebackDisabled bool
+	parentSealer      ParentSealer
+
+	heldMu   sync.Mutex
+	massHeld map[string][]int64
 }
 
 func (d *DB) SetWritebackDisabled(v bool) {
@@ -136,6 +143,10 @@ var migrationSteps = []string{
 	`ALTER TABLE inodes ADD COLUMN download_baseline_hash TEXT NOT NULL DEFAULT '';`,
 	`ALTER TABLE inodes ADD COLUMN local_remote_etag TEXT NOT NULL DEFAULT '';
 	 UPDATE inodes SET local_remote_etag = etag WHERE local_hash != '';`,
+	`ALTER TABLE inodes ADD COLUMN node_id TEXT;`,
+	`ALTER TABLE inodes ADD COLUMN pending_node_id TEXT;`,
+	`ALTER TABLE inodes ADD COLUMN local_file_id TEXT NOT NULL DEFAULT '';`,
+	`CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);`,
 }
 
 func migrate(db *sql.DB) error {
@@ -247,8 +258,8 @@ func (d *DB) UpsertInode(inode *Inode) (int64, error) {
 	err := d.db.QueryRow(`
 		INSERT INTO inodes (remote_path, display_name, is_dir, size, mtime, cached, dirty,
 		                     pinned, last_access, content_hash, local_hash, local_mtime, sealed_key, enc_meta, etag,
-		                     parent_id, sync_status, status_reason)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		                     parent_id, sync_status, status_reason, node_id, pending_node_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''))
 		ON CONFLICT(remote_path) DO UPDATE SET
 		    display_name  = excluded.display_name,
 		    is_dir        = excluded.is_dir,
@@ -268,13 +279,18 @@ func (d *DB) UpsertInode(inode *Inode) (int64, error) {
 		    enc_meta      = excluded.enc_meta,
 		    etag          = COALESCE(NULLIF(excluded.etag, ''), inodes.etag),
 		    parent_id     = excluded.parent_id,
-		    sync_status   = excluded.sync_status,
-		    status_reason = excluded.status_reason
+		    sync_status   = CASE WHEN inodes.sync_status = 'conflict' THEN inodes.sync_status ELSE excluded.sync_status END,
+		    status_reason = CASE WHEN inodes.sync_status = 'conflict' THEN inodes.status_reason ELSE excluded.status_reason END,
+		    -- WHY: a rebuild that knows no id must not forget one a listing or a
+		    -- queued create already recorded; clearing is explicit (ClearNodeIDs).
+		    node_id       = COALESCE(excluded.node_id, inodes.node_id),
+		    pending_node_id = CASE WHEN excluded.node_id IS NOT NULL THEN NULL
+		                           ELSE COALESCE(excluded.pending_node_id, inodes.pending_node_id) END
 		RETURNING id`,
 		inode.RemotePath, inode.DisplayName, isDir, inode.Size, inode.Mtime,
 		cached, dirty, pinned, inode.LastAccess, inode.ContentHash, inode.LocalHash, inode.LocalMtime,
 		inode.SealedKey, inode.EncMeta, inode.Etag, inode.ParentID,
-		string(inode.SyncStatus), inode.StatusReason).Scan(&id)
+		string(inode.SyncStatus), inode.StatusReason, inode.NodeID, inode.PendingNodeID).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -286,6 +302,41 @@ func (d *DB) DeleteInode(remotePath string) error {
 	defer d.writeMu.Unlock()
 	_, err := d.db.Exec("DELETE FROM inodes WHERE remote_path = ?", remotePath)
 	return err
+}
+
+func (d *DB) PruneInodeTree(remotePath string) ([]string, error) {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+	const scope = `(remote_path = ? OR substr(remote_path, 1, length(?) + 1) = ? || '/') AND dirty = 0 AND sync_status != 'pending'`
+	args := []any{remotePath, remotePath, remotePath}
+	rows, err := d.db.Query("SELECT content_hash FROM inodes WHERE content_hash != '' AND "+scope, args...)
+	if err != nil {
+		return nil, err
+	}
+	var hashes []string
+	for rows.Next() {
+		var h string
+		if err := rows.Scan(&h); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		hashes = append(hashes, h)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for _, stmt := range []string{
+		"DELETE FROM writeback_queue WHERE inode_id IN (SELECT id FROM inodes WHERE " + scope + ")",
+		"DELETE FROM sync_failures WHERE inode_id IN (SELECT id FROM inodes WHERE " + scope + ")",
+		"DELETE FROM inodes WHERE " + scope,
+	} {
+		if _, err := d.db.Exec(stmt, args...); err != nil {
+			return hashes, err
+		}
+	}
+	return hashes, nil
 }
 
 func (d *DB) DeleteChildren(parentID int64) error {
@@ -396,6 +447,19 @@ func (d *DB) ListIssues() ([]*Inode, error) {
 	return collectInodes(rows)
 }
 
+func (d *DB) ListUnsynced(limit int) ([]*Inode, error) {
+	rows, err := d.db.Query(
+		`SELECT `+inodeColumns+` FROM inodes WHERE sync_status != 'synced'
+		 ORDER BY CASE WHEN sync_status IN ('failed', 'rejected', 'conflict') THEN 0 ELSE 1 END, remote_path ASC
+		 LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	return collectInodes(rows)
+}
+
 func (d *DB) InodesWithFailures() ([]*Inode, error) {
 	rows, err := d.db.Query(
 		`SELECT ` + inodeColumns + ` FROM inodes
@@ -450,10 +514,34 @@ func (d *DB) EnqueueWriteback(inodeID int64, action, remotePath, extraJSON strin
 	if action == "upload" && UploadKeyFromExtra(extraJSON) == "" {
 		extraJSON = MarshalUploadExtra(api.NewUploadIdempotencyKey())
 	}
+	switch action {
+	case "upload", "mkdir":
+		var err error
+		if extraJSON, err = d.withNodeIdentityLocked(inodeID, remotePath, extraJSON); err != nil {
+			return err
+		}
+	case "delete":
+		var isDir int
+		if err := d.db.QueryRow("SELECT is_dir FROM inodes WHERE id = ?", inodeID).Scan(&isDir); err == nil && isDir != 0 {
+			extraJSON = folderDeleteExtra
+		}
+		if _, err := d.db.Exec(
+			"DELETE FROM writeback_queue WHERE action = 'upload' AND status = 'pending' AND (inode_id = ? OR remote_path = ?)",
+			inodeID, remotePath); err != nil {
+			return err
+		}
+	}
 	if action != "rename" {
 		if _, err := d.db.Exec(
 			"DELETE FROM writeback_queue WHERE inode_id = ? AND action = ? AND status = 'pending'",
 			inodeID, action); err != nil {
+			return err
+		}
+	}
+	if action == "upload" {
+		if _, err := d.db.Exec(
+			"DELETE FROM writeback_queue WHERE action = 'delete' AND status = 'pending' AND extra_json != ? AND (inode_id = ? OR remote_path = ?)",
+			folderDeleteExtra, inodeID, remotePath); err != nil {
 			return err
 		}
 	}
@@ -463,6 +551,8 @@ func (d *DB) EnqueueWriteback(inodeID int64, action, remotePath, extraJSON strin
 		inodeID, action, remotePath, extraJSON, time.Now().Unix())
 	return err
 }
+
+const folderDeleteExtra = `{"folder":true}`
 
 func MarshalUploadExtra(key string) string {
 	if key == "" {
@@ -779,7 +869,7 @@ type rowScanner interface {
 
 const inodeColumns = `id, remote_path, display_name, is_dir, size, mtime, cached, dirty,
 	pinned, last_access, content_hash, local_hash, local_mtime, sealed_key, enc_meta, etag,
-	parent_id, sync_status, status_reason`
+	parent_id, sync_status, status_reason, node_id, pending_node_id, local_file_id`
 
 func collectInodes(rows *sql.Rows) ([]*Inode, error) {
 	var inodes []*Inode
@@ -797,15 +887,17 @@ func scanInodeRow(row rowScanner) (*Inode, error) {
 	var inode Inode
 	var isDir, cached, dirty, pinned int
 	var syncStatus string
+	var nodeID, pendingNodeID sql.NullString
 	err := row.Scan(
 		&inode.ID, &inode.RemotePath, &inode.DisplayName, &isDir,
 		&inode.Size, &inode.Mtime, &cached, &dirty, &pinned,
 		&inode.LastAccess, &inode.ContentHash, &inode.LocalHash, &inode.LocalMtime, &inode.SealedKey,
 		&inode.EncMeta, &inode.Etag, &inode.ParentID,
-		&syncStatus, &inode.StatusReason)
+		&syncStatus, &inode.StatusReason, &nodeID, &pendingNodeID, &inode.LocalFileID)
 	if err != nil {
 		return nil, err
 	}
+	inode.NodeID, inode.PendingNodeID = nodeID.String, pendingNodeID.String
 	inode.IsDir = isDir != 0
 	inode.Cached = cached != 0
 	inode.Dirty = dirty != 0

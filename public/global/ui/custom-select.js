@@ -26,7 +26,10 @@
             const kbd = document.createElement("kbd");
             kbd.className = "custom-select-kbd";
             kbd.setAttribute("aria-hidden", "true");
-            kbd.textContent = String(i + 1);
+            const cap = document.createElement("span");
+            cap.className = "kbd-cap";
+            cap.textContent = String(i + 1);
+            kbd.appendChild(cap);
             el.prepend(kbd);
         });
     }
@@ -148,11 +151,13 @@
             if (!asLevel) { updateDisplay(); }
         }
 
+        const keepOpen = "keepOpen" in container.dataset;
         const ctl = window.PigcloudMenu.attach(toggle, menu, {
             placement: "bottom-start",
             toggleIcon: false,
             openerLit: true,
             openerArrows: false,
+            closeOnSelect: !keepOpen,
             items: () => visibleOptionEls(optionEls),
             drillIn: () => sheetTitleFor(container, toggle),
             onOpen: (surface) => {
@@ -214,7 +219,7 @@
                 } else {
                     setValue(value, true);
                 }
-                closeMenu();
+                if (!keepOpen) { closeMenu(); }
             });
         }
 
@@ -559,8 +564,15 @@
         return proxy;
     }
 
+    function ensure(idOrEl) {
+        const el = typeof idOrEl === "string" ? document.getElementById(idOrEl) : idOrEl;
+        if (!el) { return null; }
+        return el.tagName === "SELECT" ? upgrade(el) : getProxy(el);
+    }
+
     window.PigcloudCustomSelect = {
         upgrade,
+        ensure,
         create,
         closeAll: function () { closeAllCustomSelects(null); },
         getProxy

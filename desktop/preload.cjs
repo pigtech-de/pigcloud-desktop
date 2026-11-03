@@ -5,7 +5,12 @@ const trusted = !url.username && !url.password && (url.origin === 'https://pigcl
     || (url.protocol === 'pigcloud-app:' && url.hostname === 'settings' && !url.port));
 
 if (process.isMainFrame && trusted) {
-    const invoke = (name, value) => ipcRenderer.invoke(`pigcloud:sync:${name}`, value);
+    const invoke = async (name, value) => {
+        const result = await ipcRenderer.invoke(`pigcloud:sync:${name}`, value);
+        const code = result && typeof result === 'object' ? result.__pigcloudNativeFailure : undefined;
+        if (typeof code === 'string') throw new Error(`pigcloud-native:${code}`);
+        return result;
+    };
     contextBridge.exposeInMainWorld('PigcloudSyncEngine', Object.freeze({
         capabilities: () => invoke('capabilities'),
         getSettings: () => invoke('getSettings'),
@@ -22,6 +27,7 @@ if (process.isMainFrame && trusted) {
         resolve: value => invoke('resolve', value),
         retry: value => invoke('retry', value),
         flush: value => invoke('flush', value),
+        release: value => invoke('release', value),
         pickFolder: () => invoke('pickFolder'),
         pickCli: () => invoke('pickCli'),
         resetCli: () => invoke('resetCli'),
@@ -32,7 +38,7 @@ if (process.isMainFrame && trusted) {
         installUpdate: () => invoke('installUpdate'),
         openAccountSettings: () => invoke('openAccountSettings'),
         login: () => invoke('login'),
-        loginCli: () => invoke('loginCli'),
+        loginCli: value => invoke('loginCli', value),
         cancelLoginCli: () => invoke('cancelLoginCli'),
         subscribe: callback => {
             if (typeof callback !== 'function') throw new TypeError('A subscription needs a callback.');
